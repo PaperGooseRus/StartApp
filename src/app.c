@@ -3,10 +3,15 @@
 #include "editor.h"
 #include "graph.h"
 #include "theme.h"
+#include "build_panel.h"
+#include "session.h"
 #include <glib/gstdio.h>
 #include <math.h>
+#ifdef G_OS_WIN32
+#include <glib/gwin32.h>
+#endif
 
-typedef enum { ACTION_NONE, ACTION_FILE, ACTION_LOCATION, ACTION_PROJECT, ACTION_CLOSE, ACTION_RELOAD } Action;
+typedef enum { ACTION_NONE, ACTION_FILE, ACTION_LOCATION, ACTION_PROJECT, ACTION_CLOSE, ACTION_RELOAD, ACTION_BUILD } Action;
 
 typedef struct {
     GtkApplication *application;
@@ -21,6 +26,17 @@ typedef struct {
     GtkStack *sidebar_pages;
     GtkLabel *build_chain, *build_profile;
     GtkLabel *build_name;
+    BuildPanel *build_panel;
+    GtkWidget *build_button;
+    GtkToggleButton *log_toggle;
+    GtkEntry *cmake_entry;
+    GtkLabel *build_command;
+    GtkDropDown *recent_picker;
+    GtkPaned *outer, *workspace, *main_pane;
+    SessionStore *sessions;
+    SessionState *restore;
+    guint restore_tick, restore_frames;
+    const char *smoke_build_mode;
     GtkWidget *metadata_button;
     char *build_directory, *configuration;
     gboolean updating_metadata;
@@ -43,7 +59,7 @@ typedef struct {
     char *initial_path;
 } App;
 
-typedef struct { char *path, *build_directory, *configuration; gboolean replace; } ScanRequest;
+typedef struct { char *path, *build_directory, *configuration; gboolean replace; SessionState *restore; } ScanRequest;
 
 static void scan_project(App *app, const char *path, gboolean replace);
 static gboolean save_document(App *app, gboolean rescan);
@@ -53,6 +69,124 @@ static void cursor_moved(GtkTextBuffer *buffer, const GtkTextIter *location,
                          GtkTextMark *mark, gpointer user_data);
 static void select_current_file(App *app);
 static void graph_target_selected(guint index, gpointer data);
+static void update_build_controls(App *app);
+static void save_session(App *app);
+static void refresh_recent(App *app);
+static void start_build(App *app);
+static gboolean restore_view(GtkWidget *widget, GdkFrameClock *clock, gpointer data);
+static void status(App *app, const char *message);
+static void show_error(App *app, const char *title, const char *message);
+
+static gboolean building(App *app) { return build_panel_running(app->build_panel); }
+
+static char *fixture_executable(void)
+{
+#ifdef G_OS_WIN32
+    g_autofree char *prefix = g_win32_get_package_installation_directory_of_module(NULL);
+    return g_build_filename(prefix, "startapp-cli.exe", NULL);
+#else
+    return g_file_read_link("/proc/self/exe", NULL);
+#endif
+}
+static BuildPlan *current_build_plan(App *app, GError **error)
+{
+    if (app->smoke && app->project && app->project->build_directory) {
+        BuildPlan *plan = g_new0(BuildPlan, 1); plan->argv = g_new0(char *, 4);
+        plan->argv[0] = fixture_executable(); plan->argv[1] = g_strdup("--test-build-child");
+        plan->argv[2] = g_strdup(app->smoke_build_mode ? app->smoke_build_mode : "success");
+        plan->directory = g_strdup(app->project->build_directory); plan->display = g_strjoinv(" ", plan->argv); return plan;
+    }
+    g_autofree char *exe = g_find_program_in_path(gtk_editable_get_text(GTK_EDITABLE(app->cmake_entry)));
+    return build_plan_new(app->project, app->selected_target, exe, error);
+}
+static void update_build_controls(App *app)
+{
+    if (!app->build_button) return;
+    gboolean running = building(app);
+    g_autoptr(GError) error = NULL; BuildPlan *plan = current_build_plan(app, &error);
+    gtk_label_set_text(app->build_command, plan ? plan->display : error ? error->message : "Сборка недоступна");
+    gtk_widget_set_tooltip_text(GTK_WIDGET(app->build_command), plan ? plan->display : NULL);
+    gtk_widget_set_sensitive(app->build_button, plan && !running && !app->busy && !app->confirming);
+    gtk_widget_set_sensitive(GTK_WIDGET(app->cmake_entry), !running && !app->busy);
+    if (running) {
+        gtk_widget_set_sensitive(app->scan_button, FALSE); gtk_widget_set_sensitive(app->metadata_button, FALSE);
+        gtk_widget_set_sensitive(GTK_WIDGET(app->configuration_picker), FALSE); gtk_widget_set_sensitive(GTK_WIDGET(app->target_picker), FALSE);
+        gtk_widget_set_sensitive(GTK_WIDGET(app->target_mode), FALSE);
+    }
+    build_plan_free(plan);
+}
+static void log_toggled(GtkToggleButton *button, gpointer data)
+{
+    App *app = data; gboolean visible = gtk_toggle_button_get_active(button);
+    gtk_widget_set_visible(build_panel_widget(app->build_panel), visible);
+    if (visible) gtk_paned_set_position(app->main_pane, MAX(300, gtk_widget_get_height(GTK_WIDGET(app->main_pane)) - 220));
+}
+static void cmake_changed(GtkEditable *editable, gpointer data) { (void)editable; update_build_controls(data); }
+static void build_clicked(GtkButton *button, gpointer data) { (void)button; request_action(data, ACTION_BUILD, NULL); }
+static void build_navigate(const char *path, guint line, gpointer data)
+{ request_action_at(data, ACTION_LOCATION, path, line); }
+static void build_finished(gint code, gboolean stopped, gpointer data)
+{
+    App *app = data;
+    gtk_widget_set_sensitive(app->scan_button, TRUE); gtk_widget_set_sensitive(app->metadata_button, app->project != NULL);
+    gtk_widget_set_sensitive(GTK_WIDGET(app->target_mode), TRUE);
+    gtk_widget_set_sensitive(GTK_WIDGET(app->configuration_picker), app->project && app->project->configurations->len > 1);
+    gtk_widget_set_sensitive(GTK_WIDGET(app->target_picker), app->project && app->project->targets->len > 0);
+    update_build_controls(app);
+    status(app, stopped ? "Сборка остановлена" : code == 0 ? "Сборка завершена успешно" : "Сборка завершилась с ошибкой · откройте диагностику");
+    if (!stopped && code == 0 && app->project) scan_project(app, app->project->root, FALSE);
+    g_application_release(G_APPLICATION(app->application));
+}
+static void start_build(App *app)
+{
+    if (app->busy || building(app) || !app->project) return;
+    g_autoptr(GError) error = NULL; BuildPlan *plan = current_build_plan(app, &error);
+    if (!plan) { show_error(app, "Сборка недоступна", error ? error->message : "Не найден инструмент сборки"); return; }
+    if (!build_panel_start(app->build_panel, app->project, plan)) { build_plan_free(plan); return; }
+    g_application_hold(G_APPLICATION(app->application));
+    gtk_toggle_button_set_active(app->log_toggle, TRUE); status(app, "Сборка выполняется по сохранённым файлам…"); update_build_controls(app);
+}
+
+static void save_session(App *app)
+{
+    if (!app->project || app->restore) return;
+    GtkTextIter cursor; gtk_text_buffer_get_iter_at_mark(app->buffer, &cursor, gtk_text_buffer_get_insert(app->buffer));
+    SessionState state = {0}; state.file = app->selected;
+    state.build_directory = app->build_directory ? app->build_directory : app->project->build_directory;
+    state.configuration = app->configuration ? app->configuration : app->project->configuration;
+    if (app->selected_target >= 0 && (guint)app->selected_target < app->project->targets->len)
+        state.target = ((ProjectTarget *)g_ptr_array_index(app->project->targets, (guint)app->selected_target))->name;
+    state.page = (char *)gtk_stack_get_visible_child_name(app->sidebar_pages);
+    state.cmake = (char *)gtk_editable_get_text(GTK_EDITABLE(app->cmake_entry));
+    state.line = gtk_text_iter_get_line(&cursor) + 1; state.column = gtk_text_iter_get_line_offset(&cursor);
+    state.width = gtk_widget_get_width(GTK_WIDGET(app->window)); state.height = gtk_widget_get_height(GTK_WIDGET(app->window));
+    state.sidebar = gtk_paned_get_position(app->outer); state.editor = gtk_paned_get_position(app->workspace); state.log = gtk_paned_get_position(app->main_pane);
+    state.target_mode = gtk_toggle_button_get_active(app->target_mode); state.overview = gtk_toggle_button_get_active(app->overview);
+    state.groups = gtk_toggle_button_get_active(app->groups); state.log_visible = gtk_toggle_button_get_active(app->log_toggle);
+    graph_get_transform(app->graph, &state.zoom, &state.offset_x, &state.offset_y); state.expanded = graph_get_expanded(app->graph);
+    g_autoptr(GError) error = NULL;
+    if (!session_save(app->sessions, app->project->root, &state, &error)) status(app, error->message);
+    g_strfreev(state.expanded); refresh_recent(app);
+}
+static gboolean restore_view(GtkWidget *widget, GdkFrameClock *clock, gpointer data)
+{
+    (void)widget; (void)clock; App *app = data;
+    if (++app->restore_frames < 4) return G_SOURCE_CONTINUE;
+    SessionState *state = app->restore;
+    if (state) {
+        graph_restore_transform(app->graph, state->zoom, state->offset_x, state->offset_y);
+        if (app->document) {
+            guint line = MIN(state->line, gtk_text_buffer_get_line_count(app->buffer));
+            editor_go_to_line(app->editor, line);
+            GtkTextIter cursor, end; gtk_text_buffer_get_iter_at_line(app->buffer, &cursor, (gint)line - 1);
+            end = cursor; gtk_text_iter_forward_to_line_end(&end);
+            gtk_text_iter_forward_chars(&cursor, MIN(state->column, gtk_text_iter_get_line_offset(&end)));
+            gtk_text_buffer_place_cursor(app->buffer, &cursor);
+        }
+        session_state_free(state); app->restore = NULL;
+    }
+    app->restore_tick = 0; return G_SOURCE_REMOVE;
+}
 
 static void append_origin(GString *text, const char *kind, guint index,
                            const char *path, guint line)
@@ -93,6 +227,7 @@ static void update_details(App *app)
     if (!app->project) return;
     g_autofree char *passport = project_build_summary(app->project, app->selected_target);
     gtk_label_set_text(app->build_profile, passport);
+    update_build_controls(app);
     if (gtk_toggle_button_get_active(app->target_mode)) {
         GString *details = g_string_new("<b>CMake · граф целей сборки</b>\n");
         if (app->selected_target >= 0 && (guint)app->selected_target < app->project->targets->len) {
@@ -368,6 +503,7 @@ static void scan_request_free(gpointer data)
     g_free(request->path);
     g_free(request->build_directory);
     g_free(request->configuration);
+    session_state_free(request->restore);
     g_free(request);
 }
 
@@ -404,9 +540,13 @@ static void scan_done(GObject *source, GAsyncResult *result, gpointer user_data)
         gtk_widget_set_sensitive(GTK_WIDGET(app->target_picker), app->project && app->project->targets->len > 0);
         show_error(app, "Не удалось прочитать проект", error->message);
         update_document_title(app);
+        update_build_controls(app);
         g_application_release(G_APPLICATION(app->application));
         return;
     }
+    g_autofree char *previous_target = !request->replace && app->selected_target >= 0 && app->project &&
+        (guint)app->selected_target < app->project->targets->len ?
+        g_strdup(((ProjectTarget *)g_ptr_array_index(app->project->targets, (guint)app->selected_target))->name) : NULL;
     graph_set_project(app->graph, NULL, -1);
     project_free(app->project);
     app->project = project;
@@ -465,7 +605,6 @@ static void scan_done(GObject *source, GAsyncResult *result, gpointer user_data)
     gtk_drop_down_set_selected(app->target_picker, 0);
     gtk_widget_set_sensitive(GTK_WIDGET(app->target_picker), project->targets->len > 0);
     g_object_unref(targets);
-    app->updating_metadata = FALSE;
     populate_tree(app);
     gint selected = app->selected ? project_find_file(project, app->selected) : -1;
     graph_set_project(app->graph, project, selected);
@@ -474,15 +613,47 @@ static void scan_done(GObject *source, GAsyncResult *result, gpointer user_data)
         for (guint i = 0; i < project->files->len; i++) sources += ((ProjectFile *)g_ptr_array_index(project->files, i))->source;
         gtk_toggle_button_set_active(app->groups, sources > 30 || project->targets->len > 30);
     }
+    SessionState *restore = request->restore;
+    if (restore) {
+        if (restore->cmake) gtk_editable_set_text(GTK_EDITABLE(app->cmake_entry), restore->cmake);
+        if (restore->file && project_find_file(project, restore->file) >= 0) open_file(app, restore->file);
+        gtk_toggle_button_set_active(app->overview, restore->overview);
+        gtk_toggle_button_set_active(app->groups, restore->groups);
+        gtk_toggle_button_set_active(app->target_mode, restore->target_mode);
+        graph_set_expanded(app->graph, (const char *const *)restore->expanded);
+        gtk_window_set_default_size(app->window, restore->width, restore->height);
+        gtk_paned_set_position(app->outer, restore->sidebar); gtk_paned_set_position(app->workspace, restore->editor);
+        gtk_toggle_button_set_active(app->log_toggle, restore->log_visible); gtk_paned_set_position(app->main_pane, restore->log);
+        gtk_stack_set_visible_child_name(app->sidebar_pages, g_strcmp0(restore->page, "build") == 0 ? "build" : "files");
+    }
+    const char *target_name = restore ? restore->target : previous_target;
+    if (target_name) for (guint i = 0; i < project->targets->len; i++) {
+        ProjectTarget *target = g_ptr_array_index(project->targets, i);
+        if (g_str_equal(target->name, target_name)) {
+            app->selected_target = (gint)i; graph_select_target(app->graph, (gint)i);
+            gtk_drop_down_set_selected(app->target_picker, i + 1); break;
+        }
+    }
+    app->updating_metadata = FALSE;
+    if (restore) {
+        app->restore = restore; request->restore = NULL; app->restore_frames = 0;
+        app->restore_tick = gtk_widget_add_tick_callback(GTK_WIDGET(app->window), restore_view, app, NULL);
+    }
     update_details(app);
     update_document_title(app);
-    status(app, "Карта обновлена · скрипты проекта не запускались");
+    status(app, "Карта обновлена по файлам на диске");
+    refresh_recent(app);
     g_application_release(G_APPLICATION(app->application));
 }
 
 static void scan_project(App *app, const char *path, gboolean replace)
 {
-    if (app->busy || app->closing) return;
+    if (app->busy || app->closing || building(app)) return;
+    if (replace) {
+        save_session(app);
+        if (app->restore_tick) { gtk_widget_remove_tick_callback(GTK_WIDGET(app->window), app->restore_tick); app->restore_tick = 0; }
+        session_state_free(app->restore); app->restore = NULL;
+    }
     app->busy = TRUE;
     /* Keep selection/focus while reading; disable editing rather than the widget. */
     gtk_text_view_set_editable(app->editor, FALSE);
@@ -493,12 +664,20 @@ static void scan_project(App *app, const char *path, gboolean replace)
     gtk_widget_set_sensitive(GTK_WIDGET(app->target_mode), FALSE);
     update_document_title(app);
     status(app, "Чтение проекта…");
+    update_build_controls(app);
     ScanRequest *request = g_new0(ScanRequest, 1);
     request->path = g_strdup(path);
     request->replace = replace;
     if (!replace || !app->project) {
         request->build_directory = g_strdup(app->build_directory);
         request->configuration = g_strdup(app->configuration);
+    }
+    if (replace) {
+        request->restore = session_load(app->sessions, path);
+        if (request->restore) {
+            if (!request->build_directory) request->build_directory = g_strdup(request->restore->build_directory);
+            if (!request->configuration) request->configuration = g_strdup(request->restore->configuration);
+        }
     }
     GTask *task = g_task_new(NULL, NULL, scan_done, app);
     g_task_set_task_data(task, request, scan_request_free);
@@ -538,11 +717,13 @@ static void perform_action(App *app, Action action, const char *path, guint line
         status(app, message);
     }
     else if (action == ACTION_PROJECT) scan_project(app, path, TRUE);
+    else if (action == ACTION_BUILD) start_build(app);
     else if (action == ACTION_RELOAD && app->selected) {
         g_autofree char *selected = g_strdup(app->selected);
         open_file(app, selected);
         if (app->project) scan_project(app, app->project->root, FALSE);
     } else if (action == ACTION_CLOSE) {
+        save_session(app);
         app->closing = TRUE;
         gtk_window_destroy(app->window);
     }
@@ -554,6 +735,7 @@ static void confirm_done(GObject *source, GAsyncResult *result, gpointer user_da
     g_autoptr(GError) error = NULL;
     gint choice = gtk_alert_dialog_choose_finish(GTK_ALERT_DIALOG(source), result, &error);
     app->confirming = FALSE;
+    update_build_controls(app);
     Action action = app->pending;
     guint line = app->pending_line;
     g_autofree char *path = g_steal_pointer(&app->pending_path);
@@ -569,6 +751,9 @@ static void confirm_done(GObject *source, GAsyncResult *result, gpointer user_da
 static void request_action_at(App *app, Action action, const char *path, guint line)
 {
     if (app->busy || app->confirming || app->closing) return;
+    if (building(app) && (action == ACTION_PROJECT || action == ACTION_CLOSE || action == ACTION_BUILD)) {
+        status(app, "Сначала остановите текущую сборку"); return;
+    }
     if (action == ACTION_LOCATION && g_strcmp0(app->selected, path) == 0 &&
         gtk_text_buffer_get_modified(app->buffer)) {
         status(app, "Связь рассчитана по сохранённому файлу · сохраните правки для точного перехода");
@@ -583,6 +768,7 @@ static void request_action_at(App *app, Action action, const char *path, guint l
     app->pending_path = g_strdup(path);
     app->pending_line = line;
     app->confirming = TRUE;
+    update_build_controls(app);
     GtkAlertDialog *dialog = gtk_alert_dialog_new("Сохранить изменения?");
     gtk_alert_dialog_set_detail(dialog, app->selected);
     const char *buttons[] = {"Отмена", "Не сохранять", "Сохранить", NULL};
@@ -631,7 +817,7 @@ static void folder_chosen(GObject *source, GAsyncResult *result, gpointer user_d
     App *app = user_data;
     g_autoptr(GError) error = NULL;
     g_autoptr(GFile) folder = gtk_file_dialog_select_folder_finish(GTK_FILE_DIALOG(source), result, &error);
-    if (folder && !app->closing) {
+    if (folder && !app->closing && !building(app)) {
         g_autofree char *path = g_file_get_path(folder);
         if (path && g_object_get_data(source, "build-directory-picker")) {
             if (app->project && !app->busy) {
@@ -646,7 +832,7 @@ static void folder_chosen(GObject *source, GAsyncResult *result, gpointer user_d
 
 static void choose_directory(App *app, gboolean build)
 {
-    if (app->busy || app->confirming || (build && !app->project)) return;
+    if (app->busy || app->confirming || building(app) || (build && !app->project)) return;
     GtkFileDialog *dialog = gtk_file_dialog_new();
     g_object_set_data(G_OBJECT(dialog), "build-directory-picker", GINT_TO_POINTER(build));
     gtk_file_dialog_set_title(dialog, build ? "Каталог с compile_commands.json или CMake File API" : "Открыть папку проекта");
@@ -669,7 +855,7 @@ static void configuration_changed(GObject *object, GParamSpec *spec, gpointer da
 {
     (void)object; (void)spec;
     App *app = data;
-    if (app->updating_metadata || app->busy || !app->project) return;
+    if (app->updating_metadata || app->busy || building(app) || !app->project) return;
     guint selected = gtk_drop_down_get_selected(app->configuration_picker);
     if (selected >= app->project->configurations->len) return;
     const char *name = g_ptr_array_index(app->project->configurations, selected);
@@ -689,7 +875,7 @@ static void target_mode_toggled(GtkToggleButton *button, gpointer data)
 static void graph_target_selected(guint index, gpointer data)
 {
     App *app = data;
-    if (!app->project || app->busy || index >= app->project->targets->len) return;
+    if (!app->project || app->busy || building(app) || index >= app->project->targets->len) return;
     app->selected_target = (gint)index;
     gtk_toggle_button_set_active(app->target_mode, TRUE);
     graph_select_target(app->graph, (gint)index);
@@ -701,7 +887,7 @@ static void target_changed(GObject *object, GParamSpec *spec, gpointer data)
 {
     (void)object; (void)spec;
     App *app = data;
-    if (app->updating_metadata || !app->project || app->busy) return;
+    if (app->updating_metadata || !app->project || app->busy || building(app)) return;
     guint index = gtk_drop_down_get_selected(app->target_picker);
     if (!index) {
         app->selected_target = -1;
@@ -738,17 +924,41 @@ static void graph_zoom_out(GtkButton *button, gpointer data)
 static void graph_fit_clicked(GtkButton *button, gpointer data)
 { (void)button; graph_fit(((App *)data)->graph); }
 
+static void recent_changed(GObject *object, GParamSpec *spec, gpointer data)
+{
+    (void)object; (void)spec; App *app = data;
+    guint index = gtk_drop_down_get_selected(app->recent_picker);
+    if (!index || app->updating_metadata || app->busy || building(app)) return;
+    GtkStringObject *item = gtk_drop_down_get_selected_item(app->recent_picker);
+    if (!item) return;
+    g_autofree char *path = g_strdup(gtk_string_object_get_string(item));
+    gtk_drop_down_set_selected(app->recent_picker, 0);
+    request_action(app, ACTION_PROJECT, path);
+}
+static void refresh_recent(App *app)
+{
+    if (!app->recent_picker) return;
+    g_auto(GStrv) roots = session_recent(app->sessions);
+    GtkStringList *model = gtk_string_list_new(NULL); gtk_string_list_append(model, "Недавние проекты");
+    for (guint i = 0; roots[i]; i++) gtk_string_list_append(model, roots[i]);
+    gboolean updating = app->updating_metadata; app->updating_metadata = TRUE;
+    gtk_drop_down_set_model(app->recent_picker, G_LIST_MODEL(model)); gtk_drop_down_set_selected(app->recent_picker, 0);
+    app->updating_metadata = updating; g_object_unref(model);
+}
+
 static gboolean close_requested(GtkWindow *window, gpointer user_data)
 {
     (void)window;
     App *app = user_data;
     if (app->confirming) return TRUE;
+    if (building(app)) { status(app, "Остановите сборку перед закрытием окна"); gtk_toggle_button_set_active(app->log_toggle, TRUE); return TRUE; }
     if (app->busy) { status(app, "Дождитесь завершения анализа"); return TRUE; }
     if (gtk_text_buffer_get_modified(app->buffer)) {
         request_action(app, ACTION_CLOSE, NULL);
         return TRUE;
     }
     app->closing = TRUE;
+    save_session(app);
     return FALSE;
 }
 
@@ -1019,7 +1229,7 @@ static gboolean smoke_tick(gpointer data)
         app->smoke_stage++;
         return G_SOURCE_CONTINUE;
     }
-    if (app->confirming && app->smoke_stage != 10 && app->smoke_stage != 11 && app->smoke_stage != 19)
+    if (app->confirming && app->smoke_stage != 10 && app->smoke_stage != 11 && app->smoke_stage != 19 && app->smoke_stage != 26)
         return G_SOURCE_CONTINUE;
     if (app->smoke_stage == 7) {
         if (g_strcmp0(app->selected, "main.c") != 0) goto failed;
@@ -1221,6 +1431,64 @@ static gboolean smoke_tick(gpointer data)
         graph_fit(app->graph);
         app->smoke_stage++; return G_SOURCE_CONTINUE;
     }
+    if (app->smoke_stage == 25) {
+        GtkTextIter end; gtk_text_buffer_get_end_iter(app->buffer, &end);
+        gtk_text_buffer_insert(app->buffer, &end, "# saved before build\n", -1);
+        app->smoke_build_mode = "failure";
+        g_signal_emit_by_name(app->build_button, "clicked");
+        if (!app->confirming || building(app)) goto failed;
+        app->smoke_stage++; return G_SOURCE_CONTINUE;
+    }
+    if (app->smoke_stage == 26) {
+        if (!smoke_answer_dialog(app, "Сохранить")) goto failed;
+        app->smoke_stage++; return G_SOURCE_CONTINUE;
+    }
+    if (app->smoke_stage == 27) {
+        if (building(app)) return G_SOURCE_CONTINUE;
+        if (build_panel_exit_code(app->build_panel) != 2 || build_panel_diagnostic_count(app->build_panel) != 1 ||
+            gtk_text_buffer_get_modified(app->buffer) || !build_panel_open_diagnostic(app->build_panel, 0)) goto failed;
+        app->smoke_stage++; return G_SOURCE_CONTINUE;
+    }
+    if (app->smoke_stage == 28) {
+        GtkTextIter cursor; gtk_text_buffer_get_iter_at_mark(app->buffer, &cursor, gtk_text_buffer_get_insert(app->buffer));
+        if (g_strcmp0(app->selected, "main.c") || gtk_text_iter_get_line(&cursor) != 100) goto failed;
+        app->smoke_build_mode = "success"; g_signal_emit_by_name(app->build_button, "clicked");
+        app->smoke_stage++; return G_SOURCE_CONTINUE;
+    }
+    if (app->smoke_stage == 29) {
+        if (building(app)) return G_SOURCE_CONTINUE;
+        if (build_panel_exit_code(app->build_panel) || build_panel_diagnostic_count(app->build_panel) || app->selected_target != 0 ||
+            g_strcmp0(app->selected, "main.c")) goto failed;
+        app->smoke_build_mode = "tree"; g_signal_emit_by_name(app->build_button, "clicked");
+        app->smoke_stage++; return G_SOURCE_CONTINUE;
+    }
+    if (app->smoke_stage == 30) {
+        if (!building(app)) goto failed;
+        request_action(app, ACTION_PROJECT, app->smoke_root);
+        if (app->busy || !close_requested(app->window, app)) goto failed;
+        build_panel_stop(app->build_panel); app->smoke_stage++; return G_SOURCE_CONTINUE;
+    }
+    if (app->smoke_stage == 31) {
+        if (building(app)) return G_SOURCE_CONTINUE;
+        if (!build_panel_stopped(app->build_panel)) goto failed;
+        GtkTextIter cursor; gtk_text_buffer_get_iter_at_line_offset(app->buffer, &cursor, 100, 3);
+        gtk_text_buffer_place_cursor(app->buffer, &cursor); graph_zoom_by(app->graph, 1.25); graph_pan(app->graph, 20, -15);
+        save_session(app);
+        g_autofree char *path = g_build_filename(app->smoke_root, "build", ".startapp-test", "workspace.ini", NULL);
+        session_store_free(app->sessions); app->sessions = session_store_new(path);
+        document_free(app->document); app->document = NULL; g_clear_pointer(&app->selected, g_free);
+        graph_set_project(app->graph, NULL, -1); project_free(app->project); app->project = NULL;
+        scan_project(app, app->smoke_root, TRUE); app->smoke_stage++; return G_SOURCE_CONTINUE;
+    }
+    if (app->smoke_stage == 32) {
+        if (app->restore) return G_SOURCE_CONTINUE;
+        GtkTextIter cursor; gtk_text_buffer_get_iter_at_mark(app->buffer, &cursor, gtk_text_buffer_get_insert(app->buffer));
+        if (g_strcmp0(app->selected, "main.c") || gtk_text_iter_get_line(&cursor) != 100 ||
+            gtk_text_iter_get_line_offset(&cursor) != 3 || app->selected_target != 0 || g_strcmp0(app->configuration, "Release")) goto failed;
+        SessionState *saved = session_load(app->sessions, app->smoke_root);
+        gboolean matches = saved && fabs(saved->zoom - graph_get_zoom(app->graph)) < .001;
+        session_state_free(saved); if (!matches) goto failed;
+    }
     if (!take_screenshot(app)) goto failed;
     GtkWidget *controls[] = {app->scan_button, app->save_button, GTK_WIDGET(app->target_mode), GTK_WIDGET(app->position)};
     for (guint i = 0; i < G_N_ELEMENTS(controls); i++) {
@@ -1229,7 +1497,8 @@ static gboolean smoke_tick(gpointer data)
             bounds.origin.x < 0 || bounds.origin.x + bounds.size.width > gtk_widget_get_width(GTK_WIDGET(app->window)) + 1)
             goto failed;
     }
-    g_print("UI smoke PASS: syntax and multiline contexts, editing, navigation, build passport, Debug/Release, layered graph, zoom/pan/groups, native decorations\n");
+    save_session(app);
+    g_print("UI smoke PASS: editor/graph, build save dialog, streamed failure and navigation, success/rescan, cancellation, session restore\n");
     app->closing = TRUE;
     gtk_window_destroy(app->window);
     return G_SOURCE_REMOVE;
@@ -1276,6 +1545,7 @@ static void activate(GtkApplication *application, gpointer data)
 
     GtkWidget *body = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_window_set_child(app->window, body);
+    app->build_panel = build_panel_new(build_navigate, build_finished, app);
     GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
     gtk_widget_add_css_class(header, "toolbar");
     GtkWidget *brand = label_new("StartApp", "title");
@@ -1290,10 +1560,19 @@ static void activate(GtkApplication *application, gpointer data)
     gtk_box_append(GTK_BOX(header), subtitle);
     app->scan_button = button_new("Обновить карту", G_CALLBACK(scan_clicked), app);
     gtk_box_append(GTK_BOX(header), app->scan_button);
+    app->log_toggle = GTK_TOGGLE_BUTTON(gtk_toggle_button_new_with_label("Журнал сборки"));
+    g_signal_connect(app->log_toggle, "toggled", G_CALLBACK(log_toggled), app);
+    gtk_box_append(GTK_BOX(header), GTK_WIDGET(app->log_toggle));
     gtk_box_append(GTK_BOX(body), header);
+    app->main_pane = GTK_PANED(gtk_paned_new(GTK_ORIENTATION_VERTICAL));
+    gtk_widget_set_vexpand(GTK_WIDGET(app->main_pane), TRUE); gtk_box_append(GTK_BOX(body), GTK_WIDGET(app->main_pane));
     GtkWidget *outer = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
+    app->outer = GTK_PANED(outer);
     gtk_widget_set_vexpand(outer, TRUE);
-    gtk_box_append(GTK_BOX(body), outer);
+    gtk_paned_set_start_child(app->main_pane, outer);
+    gtk_paned_set_end_child(app->main_pane, build_panel_widget(app->build_panel));
+    gtk_paned_set_position(app->main_pane, 520); gtk_paned_set_shrink_start_child(app->main_pane, FALSE);
+    gtk_paned_set_shrink_end_child(app->main_pane, TRUE); gtk_widget_set_visible(build_panel_widget(app->build_panel), FALSE);
     GtkWidget *sidebar = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
     gtk_widget_add_css_class(sidebar, "sidebar");
     gtk_widget_set_size_request(sidebar, 240, -1);
@@ -1301,6 +1580,15 @@ static void activate(GtkApplication *application, gpointer data)
     app->project_name = GTK_LABEL(label_new("Папка не выбрана", "title"));
     gtk_label_set_ellipsize(app->project_name, PANGO_ELLIPSIZE_MIDDLE);
     gtk_box_append(GTK_BOX(sidebar), GTK_WIDGET(app->project_name));
+    const char *recent_default[] = {"Недавние проекты", NULL};
+    app->recent_picker = GTK_DROP_DOWN(gtk_drop_down_new_from_strings(recent_default));
+    GtkListItemFactory *recent_factory = gtk_signal_list_item_factory_new();
+    g_signal_connect(recent_factory, "setup", G_CALLBACK(target_item_setup), NULL);
+    g_signal_connect(recent_factory, "bind", G_CALLBACK(target_item_bind), NULL);
+    gtk_drop_down_set_factory(app->recent_picker, recent_factory); gtk_drop_down_set_list_factory(app->recent_picker, recent_factory);
+    g_object_unref(recent_factory);
+    g_signal_connect(app->recent_picker, "notify::selected", G_CALLBACK(recent_changed), app);
+    gtk_box_append(GTK_BOX(sidebar), GTK_WIDGET(app->recent_picker)); refresh_recent(app);
     app->summary = GTK_LABEL(label_new("Выберите папку с исходниками.\nФайлы сборки также доступны\nдля просмотра и редактирования.", "muted"));
     gtk_label_set_wrap(app->summary, TRUE);
     gtk_label_set_max_width_chars(app->summary, 28);
@@ -1310,6 +1598,7 @@ static void activate(GtkApplication *application, gpointer data)
     gtk_label_set_max_width_chars(app->build_chain, 28);
     gtk_box_append(GTK_BOX(sidebar), GTK_WIDGET(app->build_chain));
     app->sidebar_pages = GTK_STACK(gtk_stack_new());
+    gtk_stack_set_vhomogeneous(app->sidebar_pages, FALSE);
     gtk_widget_set_vexpand(GTK_WIDGET(app->sidebar_pages), TRUE);
     GtkWidget *switcher = gtk_stack_switcher_new();
     gtk_stack_switcher_set_stack(GTK_STACK_SWITCHER(switcher), app->sidebar_pages);
@@ -1318,7 +1607,7 @@ static void activate(GtkApplication *application, gpointer data)
     GtkWidget *file_panel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     GtkWidget *build_panel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     gtk_stack_add_titled(app->sidebar_pages, file_panel, "files", "Файлы");
-    gtk_stack_add_titled(app->sidebar_pages, build_panel, "build", "Сборка");
+    gtk_stack_add_titled(app->sidebar_pages, scroll(build_panel), "build", "Сборка");
     app->metadata_button = button_new("Каталог сборки…", G_CALLBACK(choose_metadata), app);
     gtk_widget_set_sensitive(app->metadata_button, FALSE);
     gtk_box_append(GTK_BOX(build_panel), app->metadata_button);
@@ -1330,12 +1619,24 @@ static void activate(GtkApplication *application, gpointer data)
     gtk_widget_set_sensitive(GTK_WIDGET(app->configuration_picker), FALSE);
     g_signal_connect(app->configuration_picker, "notify::selected", G_CALLBACK(configuration_changed), app);
     gtk_box_append(GTK_BOX(build_panel), GTK_WIDGET(app->configuration_picker));
+    gtk_box_append(GTK_BOX(build_panel), label_new("Инструмент CMake", "muted"));
+    app->cmake_entry = GTK_ENTRY(gtk_entry_new());
+    g_autofree char *cmake_program = g_find_program_in_path("cmake");
+    gtk_editable_set_text(GTK_EDITABLE(app->cmake_entry), cmake_program ? cmake_program : "cmake");
+    gtk_entry_set_placeholder_text(app->cmake_entry, "Путь к cmake / cmake.exe");
+    g_signal_connect(app->cmake_entry, "changed", G_CALLBACK(cmake_changed), app);
+    gtk_box_append(GTK_BOX(build_panel), GTK_WIDGET(app->cmake_entry));
+    app->build_command = GTK_LABEL(label_new("Откройте настроенный CMake-проект", "muted"));
+    gtk_label_set_ellipsize(app->build_command, PANGO_ELLIPSIZE_MIDDLE); gtk_label_set_max_width_chars(app->build_command, 28);
+    gtk_box_append(GTK_BOX(build_panel), GTK_WIDGET(app->build_command));
+    app->build_button = button_new("Собрать выбранную цель", G_CALLBACK(build_clicked), app);
+    gtk_widget_add_css_class(app->build_button, "suggested-action"); gtk_box_append(GTK_BOX(build_panel), app->build_button);
     app->build_profile = GTK_LABEL(label_new("Откройте проект для просмотра параметров сборки.", "muted"));
     gtk_label_set_wrap(app->build_profile, TRUE);
     gtk_label_set_wrap_mode(app->build_profile, PANGO_WRAP_WORD_CHAR);
     gtk_label_set_max_width_chars(app->build_profile, 28);
     gtk_label_set_selectable(app->build_profile, TRUE);
-    gtk_box_append(GTK_BOX(build_panel), scroll(GTK_WIDGET(app->build_profile)));
+    gtk_box_append(GTK_BOX(build_panel), GTK_WIDGET(app->build_profile));
     app->search = GTK_SEARCH_ENTRY(gtk_search_entry_new());
     gtk_search_entry_set_placeholder_text(app->search, "Поиск файлов · Ctrl+P");
     gtk_search_entry_set_search_delay(app->search, 150);
@@ -1362,6 +1663,7 @@ static void activate(GtkApplication *application, gpointer data)
     gtk_paned_set_position(GTK_PANED(outer), 250);
 
     GtkWidget *workspace = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
+    app->workspace = GTK_PANED(workspace);
     gtk_paned_set_end_child(GTK_PANED(outer), workspace);
     GtkWidget *editor_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     GtkWidget *editor_toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
@@ -1445,7 +1747,7 @@ static void activate(GtkApplication *application, gpointer data)
     g_signal_connect(app->details, "activate-link", G_CALLBACK(details_link), app);
     GtkWidget *details_scroll = scroll(GTK_WIDGET(app->details));
     gtk_widget_set_vexpand(details_scroll, FALSE);
-    gtk_widget_set_size_request(details_scroll, -1, 140);
+    gtk_widget_set_size_request(details_scroll, -1, 100);
     gtk_box_append(GTK_BOX(graph_box), details_scroll);
     gtk_paned_set_end_child(GTK_PANED(workspace), graph_box);
     gtk_paned_set_position(GTK_PANED(workspace), 470);
@@ -1463,6 +1765,7 @@ static void activate(GtkApplication *application, gpointer data)
     gtk_box_append(GTK_BOX(body), footer);
     update_document_title(app);
     gtk_window_present(app->window);
+    update_build_controls(app);
     if (app->initial_path) scan_project(app, app->initial_path, TRUE);
     if (app->smoke) g_timeout_add(350, smoke_tick, app);
 }
@@ -1495,6 +1798,12 @@ int app_run(const char *project_path, const char *build_directory, const char *c
         g_free(app.initial_path);
         app.initial_path = g_strdup(app.smoke_root);
     }
+    g_autofree char *session_file = app.smoke_root ? g_build_filename(app.smoke_root, "build", ".startapp-test", "workspace.ini", NULL) : NULL;
+    app.sessions = session_store_new(session_file);
+    if (!app.initial_path) {
+        g_auto(GStrv) recent = session_recent(app.sessions);
+        for (guint i = 0; recent[i]; i++) if (g_file_test(recent[i], G_FILE_TEST_IS_DIR)) { app.initial_path = g_strdup(recent[i]); break; }
+    }
     app.application = gtk_application_new("io.github.PaperGooseRus.StartApp", G_APPLICATION_NON_UNIQUE);
     g_signal_connect(app.application, "activate", G_CALLBACK(activate), &app);
     int result = g_application_run(G_APPLICATION(app.application), 0, NULL);
@@ -1502,6 +1811,7 @@ int app_run(const char *project_path, const char *build_directory, const char *c
     document_free(app.document);
     project_free(app.project);
     if (app.graph) graph_free(app.graph);
+    build_panel_free(app.build_panel); session_state_free(app.restore); session_store_free(app.sessions);
     g_free(app.selected);
     g_free(app.pending_path);
     g_free(app.initial_path);

@@ -10,5 +10,5 @@ touch build/windows/.cmake/api/v1/query/codemodel-v2
 touch build/windows/.cmake/api/v1/query/toolchains-v1
 cmake -S . -B build/windows -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 cmake --build build/windows --parallel 2
-ctest --test-dir build/windows -R '^(core|metadata-self)$' --output-on-failure
+ctest --test-dir build/windows -R '^(core|build-run|cmake-build|metadata-self)$' --output-on-failure
 bash scripts/package-windows.sh
