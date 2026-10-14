@@ -1,5 +1,7 @@
 #include "document.h"
 #include "project.h"
+#include "build_metadata.h"
+#include <json-glib/json-glib.h>
 #include <glib/gstdio.h>
 #include <string.h>
 #ifndef G_OS_WIN32
@@ -326,6 +328,270 @@ static void test_search_empty(void)
     g_assert_false(project_path_matches("src/main.c", "does-not-exist"));
 }
 
+static void put(const char *root, const char *path, const char *text)
+{
+    g_autofree char *written = write_file(root, path, text);
+}
+
+static ProjectEdge *include_edge(Project *project, const char *source, const char *name)
+{
+    gint index = project_find_file(project, source);
+    g_assert_cmpint(index, >=, 0);
+    for (guint i = 0; i < project->edges->len; i++) {
+        ProjectEdge *edge = g_ptr_array_index(project->edges, i);
+        if ((gint)edge->from == index && g_str_equal(edge->include, name)) return edge;
+    }
+    g_error("Missing fixture include %s -> %s", source, name);
+    return NULL;
+}
+
+static void resolved(Project *project, const char *source, const char *name, const char *destination)
+{
+    ProjectEdge *edge = include_edge(project, source, name);
+    g_assert_true(edge->metadata);
+    g_assert_false(edge->ambiguous);
+    g_assert_cmpint(edge->to, ==, destination ? project_find_file(project, destination) : -1);
+}
+
+static void test_windows_commands(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_auto(GStrv) args = build_metadata_split_command(
+        "cl.exe /I\"C:\\SDK files\\include\" /external:I C:\\SDK\\system /c \"src\\МОДУЛЬ.c\" \"\"", TRUE, &error);
+    g_assert_no_error(error);
+    g_assert_cmpuint(g_strv_length(args), ==, 7);
+    g_assert_cmpstr(args[1], ==, "/IC:\\SDK files\\include");
+    g_assert_cmpstr(args[3], ==, "C:\\SDK\\system");
+    g_assert_cmpstr(args[5], ==, "src\\МОДУЛЬ.c");
+    g_assert_cmpstr(args[6], ==, "");
+    g_auto(GStrv) doubled = build_metadata_split_command("cl \"say\"\"hello\"", TRUE, &error);
+    g_assert_no_error(error);
+    g_assert_cmpstr(doubled[1], ==, "say\"hello");
+    g_auto(GStrv) broken = build_metadata_split_command("cl /I\"broken", TRUE, &error);
+    g_assert_null(broken);
+    g_assert_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA);
+}
+
+static void test_compile_order(void)
+{
+    g_autofree char *root = fixture();
+    put(root, "src/main.c", "#include <api.h>\n#include \"quote.h\"\n#include <quote.h>\n#include <system.h>\n");
+    put(root, "первый каталог/api.h", "");
+    put(root, "second/api.h", "");
+    put(root, "quoted/quote.h", "");
+    put(root, "second/quote.h", "");
+    put(root, "system/system.h", "");
+    put(root, "after/system.h", "");
+    put(root, "build/compile_commands.json", "[{\"directory\":\"..\",\"file\":\"src/main.c\","
+        "\"arguments\":[\"cc\",\"-Iпервый каталог\",\"-I\",\"second\",\"-iquote\",\"quoted\","
+        "\"-idirafterafter\",\"-isystem\",\"system\"]}]");
+    Project *project = scan(root);
+    g_assert_cmpuint(project->compile_units, ==, 1);
+    resolved(project, "src/main.c", "api.h", "первый каталог/api.h");
+    ProjectFile *source = g_ptr_array_index(project->files, project_find_file(project, "src/main.c"));
+    ProjectEdge *quote = g_ptr_array_index(project->edges, source->include_start + 1);
+    ProjectEdge *angle = g_ptr_array_index(project->edges, source->include_start + 2);
+    g_assert_cmpint(quote->to, ==, project_find_file(project, "quoted/quote.h"));
+    g_assert_cmpint(angle->to, ==, project_find_file(project, "second/quote.h"));
+    resolved(project, "src/main.c", "system.h", "system/system.h");
+    g_assert_cmpuint(project->notes->len, ==, 0);
+    g_autofree char *json = project_to_json(project);
+    g_autoptr(JsonParser) parser = json_parser_new();
+    g_assert_true(json_parser_load_from_data(parser, json, -1, NULL));
+    project_free(project);
+    remove_tree(root);
+}
+
+static void test_compile_inheritance(void)
+{
+    g_autofree char *root = fixture();
+    put(root, "main.c", "#include \"common/a.h\"\n");
+    put(root, "common/a.h", "#include <nested.h>\n");
+    put(root, "headers/nested.h", "#include \"../common/a.h\"\n");
+    put(root, "build/compile_commands.json", "[{\"directory\":\"..\",\"file\":\"main.c\","
+        "\"arguments\":[\"cc\",\"/Iheaders\"]}]");
+    Project *project = scan(root);
+    resolved(project, "common/a.h", "nested.h", "headers/nested.h");
+    resolved(project, "headers/nested.h", "../common/a.h", "common/a.h");
+    g_assert_cmpuint(project->edges->len, ==, 3);
+    project_free(project);
+    remove_tree(root);
+}
+
+static void test_compile_conflict(void)
+{
+    g_autofree char *root = fixture();
+    put(root, "a.c", "#include \"shared.h\"\n");
+    put(root, "b.c", "#include \"shared.h\"\n");
+    put(root, "shared.h", "#include <choice.h>\n");
+    put(root, "one/choice.h", "");
+    put(root, "two/choice.h", "");
+    put(root, "build/compile_commands.json", "["
+        "{\"directory\":\"..\",\"file\":\"a.c\",\"arguments\":[\"cc\",\"-Ione\"]},"
+        "{\"directory\":\"..\",\"file\":\"b.c\",\"arguments\":[\"cc\",\"-Itwo\"]}]");
+    Project *project = scan(root);
+    ProjectEdge *edge = include_edge(project, "shared.h", "choice.h");
+    g_assert_true(edge->metadata);
+    g_assert_true(edge->ambiguous);
+    g_assert_cmpint(edge->to, ==, -1);
+    project_free(project);
+    remove_tree(root);
+}
+
+static void test_compile_no_guessing(void)
+{
+    g_autofree char *root = fixture();
+    put(root, "main.c", "#include <guess.h>\n#include <ignored.h>\n");
+    put(root, "unrelated/guess.h", "");
+    put(root, "build/generated/ignored.h", "");
+    put(root, "build/compile_commands.json", "[{\"directory\":\"..\",\"file\":\"main.c\","
+        "\"arguments\":[\"cl\",\"/external:Ibuild/generated\",\"@flags.rsp\"]}]");
+    Project *project = scan(root);
+    resolved(project, "main.c", "guess.h", NULL);
+    resolved(project, "main.c", "ignored.h", NULL);
+    g_assert_true(include_edge(project, "main.c", "ignored.h")->outside_project);
+    g_assert_cmpuint(project->notes->len, >, 0);
+    project_free(project);
+    remove_tree(root);
+}
+
+static void test_compile_invalid(void)
+{
+    g_autofree char *root = fixture();
+    put(root, "main.c", "#include \"api.h\"\n");
+    put(root, "lib/api.h", "");
+    const char *cases[] = {"{", "{}", "[null,1,{}]",
+        "[{\"directory\":\"..\",\"file\":\"main.c\",\"arguments\":[\"cc\",false]}]",
+        "[{\"directory\":\"..\",\"file\":\"main.c\",\"arguments\":[]}]",
+        "[{\"directory\":\"..\",\"file\":\"main.c\",\"command\":\"\"}]"};
+    for (guint i = 0; i < G_N_ELEMENTS(cases); i++) {
+        put(root, "build/compile_commands.json", cases[i]);
+        Project *project = scan(root);
+        g_assert_cmpuint(project->notes->len, >, 0);
+        g_assert_cmpuint(project->compile_units, ==, 0);
+        g_assert_false(include_edge(project, "main.c", "api.h")->metadata);
+        g_assert_cmpint(include_edge(project, "main.c", "api.h")->to, ==, project_find_file(project, "lib/api.h"));
+        project_free(project);
+    }
+    remove_tree(root);
+}
+
+static void cmake_fixture(const char *root)
+{
+    put(root, "main.c", "#include <choice.h>\n");
+    put(root, "debug/choice.h", "");
+    put(root, "release/choice.h", "");
+    put(root, "CMakeLists.txt", "project(fixture C)\nadd_library(core STATIC main.c)\nadd_executable(app main.c)\ntarget_link_libraries(app PRIVATE core)\n");
+    put(root, "build/.cmake/api/v1/reply/index-2026.json",
+        "{\"objects\":[{\"kind\":\"codemodel\",\"version\":{\"major\":2},\"jsonFile\":\"model.json\"}]}");
+    put(root, "build/.cmake/api/v1/reply/model.json",
+        "{\"paths\":{\"source\":\"..\"},\"configurations\":["
+        "{\"name\":\"Debug\",\"targets\":[{\"jsonFile\":\"app-debug.json\"},{\"jsonFile\":\"core.json\"}]},"
+        "{\"name\":\"Release\",\"targets\":[{\"jsonFile\":\"app-release.json\"},{\"jsonFile\":\"core.json\"}]}]}");
+    put(root, "build/.cmake/api/v1/reply/core.json", "{\"id\":\"core-id\",\"name\":\"core\",\"type\":\"STATIC_LIBRARY\"}");
+    for (guint i = 0; i < 2; i++) {
+        g_autofree char *name = g_strdup_printf("build/.cmake/api/v1/reply/app-%s.json", i ? "release" : "debug");
+        g_autofree char *json = g_strdup_printf("{\"id\":\"app-id\",\"name\":\"app\",\"type\":\"EXECUTABLE\","
+            "\"artifacts\":[{\"path\":\"%s/app.exe\"}],\"backtrace\":0,"
+            "\"backtraceGraph\":{\"files\":[\"CMakeLists.txt\"],\"nodes\":[{\"file\":0,\"line\":3},{\"file\":0,\"line\":4}]},"
+            "\"dependencies\":[{\"id\":\"core-id\",\"backtrace\":1}],"
+            "\"sources\":[{\"path\":\"main.c\",\"compileGroupIndex\":0}],"
+            "\"compileGroups\":[{\"includes\":[{\"path\":\"%s\"}]}]}", i ? "Release" : "Debug", i ? "release" : "debug");
+        put(root, name, json);
+    }
+}
+
+static Project *scan_config(const char *root, const char *config)
+{
+    g_autoptr(GError) error = NULL;
+    Project *project = project_scan_build(root, "build", config, &error);
+    g_assert_no_error(error);
+    g_assert_nonnull(project);
+    return project;
+}
+
+static void test_cmake_configurations(void)
+{
+    g_autofree char *root = fixture();
+    cmake_fixture(root);
+    /* An unlabelled database entry must not overwrite a selected multi-config group. */
+    put(root, "build/compile_commands.json", "[{\"directory\":\"..\",\"file\":\"main.c\","
+        "\"arguments\":[\"cc\",\"-Iunrelated\"]}]");
+    Project *project = scan_config(root, "Release");
+    g_assert_cmpstr(project->configuration, ==, "Release");
+    g_assert_cmpuint(project->configurations->len, ==, 2);
+    g_assert_cmpuint(project->targets->len, ==, 2);
+    g_assert_cmpuint(project->target_edges->len, ==, 1);
+    resolved(project, "main.c", "choice.h", "release/choice.h");
+    ProjectTarget *app = g_ptr_array_index(project->targets, 0);
+    ProjectTargetEdge *edge = g_ptr_array_index(project->target_edges, 0);
+    g_assert_cmpstr(app->definition, ==, "CMakeLists.txt");
+    g_assert_cmpuint(app->line, ==, 3);
+    g_assert_cmpuint(app->sources->len, ==, 1);
+    g_assert_cmpuint(edge->from, ==, 0);
+    g_assert_cmpuint(edge->to, ==, 1);
+    g_assert_cmpuint(edge->line, ==, 4);
+    project_free(project);
+    project = scan_config(root, "Debug");
+    resolved(project, "main.c", "choice.h", "debug/choice.h");
+    project_free(project);
+    project = scan_config(root, "Missing");
+    g_assert_cmpuint(project->targets->len, ==, 0);
+    g_assert_cmpuint(project->notes->len, >, 0);
+    project_free(project);
+    remove_tree(root);
+}
+
+static void test_cmake_invalid_reply(void)
+{
+    g_autofree char *root = fixture();
+    cmake_fixture(root);
+    put(root, "build/.cmake/api/v1/reply/index-2027.json",
+        "{\"objects\":[{\"kind\":\"codemodel\",\"version\":{\"major\":2},\"jsonFile\":\"../outside.json\"}]}");
+    Project *project = scan(root);
+    g_assert_cmpuint(project->targets->len, ==, 0);
+    g_assert_cmpuint(project->notes->len, >, 0);
+    g_assert_nonnull(strstr(g_ptr_array_index(project->notes, 0), "traversal rejected"));
+    project_free(project);
+    remove_tree(root);
+}
+
+static void test_compiler_configurations(void)
+{
+    g_autofree char *root = fixture();
+    put(root, "main.c", "#include <choice.h>\n");
+    put(root, "debug/choice.h", "");
+    put(root, "release/choice.h", "");
+    put(root, "build/compile_commands.json", "["
+        "{\"directory\":\"..\",\"file\":\"main.c\",\"arguments\":[\"cc\",\"-DCMAKE_INTDIR=\\\"Debug\\\"\",\"-Idebug\"]},"
+        "{\"directory\":\"..\",\"file\":\"main.c\",\"arguments\":[\"cc\",\"-DCMAKE_INTDIR=\\\"Release\\\"\",\"-Irelease\"]}]");
+    Project *project = scan_config(root, "Release");
+    resolved(project, "main.c", "choice.h", "release/choice.h");
+    project_free(project);
+    remove_tree(root);
+}
+
+static void test_explicit_build_folder(void)
+{
+    g_autofree char *root = fixture();
+    put(root, "src/main.c", "#include <api.h>\n");
+    put(root, "include/api.h", "");
+    put(root, "build/Windows с пробелом/compile_commands.json",
+        "[{\"directory\":\"../..\",\"file\":\"src/main.c\",\"command\":\"cc -Iinclude src/main.c\"}]");
+    Project *project = scan(root);
+    g_assert_cmpuint(project->compile_units, ==, 0);
+    project_free(project);
+    g_autoptr(GError) error = NULL;
+    project = project_scan_build(root, "build/Windows с пробелом", NULL, &error);
+    g_assert_no_error(error);
+    resolved(project, "src/main.c", "api.h", "include/api.h");
+#ifdef G_OS_WIN32
+    g_assert_cmpint(project_find_file(project, "SRC\\MAIN.C"), ==, project_find_file(project, "src/main.c"));
+#endif
+    project_free(project);
+    remove_tree(root);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -344,5 +610,15 @@ int main(int argc, char **argv)
     g_test_add_func("/project/search-path-and-basename", test_search_paths);
     g_test_add_func("/project/search-unicode-normalization", test_search_unicode);
     g_test_add_func("/project/search-empty-and-no-results", test_search_empty);
+    g_test_add_func("/metadata/windows-command-quoting", test_windows_commands);
+    g_test_add_func("/metadata/include-search-order", test_compile_order);
+    g_test_add_func("/metadata/nested-headers-and-cycles", test_compile_inheritance);
+    g_test_add_func("/metadata/conflicting-header-contexts", test_compile_conflict);
+    g_test_add_func("/metadata/no-guessing-and-generated-headers", test_compile_no_guessing);
+    g_test_add_func("/metadata/malformed-compile-database", test_compile_invalid);
+    g_test_add_func("/metadata/cmake-configurations-and-origins", test_cmake_configurations);
+    g_test_add_func("/metadata/reply-path-traversal", test_cmake_invalid_reply);
+    g_test_add_func("/metadata/compiler-configurations", test_compiler_configurations);
+    g_test_add_func("/metadata/explicit-unicode-build-folder", test_explicit_build_folder);
     return g_test_run();
 }

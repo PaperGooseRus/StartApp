@@ -1,11 +1,11 @@
 CC ?= cc
 PKG_CONFIG ?= pkg-config
-CPPFLAGS += -Isrc $(shell $(PKG_CONFIG) --cflags gtk4)
+CPPFLAGS += -Isrc $(shell $(PKG_CONFIG) --cflags gtk4 json-glib-1.0)
 CFLAGS ?= -O2 -g
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Werror -MMD -MP
-LDLIBS += $(shell $(PKG_CONFIG) --libs gtk4) -lm
-CORE = build/project.o build/document.o
-APP = $(CORE) build/app.o build/editor.o build/graph.o build/main.o
+LDLIBS += $(shell $(PKG_CONFIG) --libs gtk4 json-glib-1.0) -lm
+CORE = build/project.o build/document.o build/build_metadata.o
+APP = $(CORE) build/app.o build/editor.o build/graph.o build/theme.o build/main.o
 
 .DELETE_ON_ERROR:
 
@@ -14,6 +14,7 @@ all: build/startapp
 
 check-deps:
 	@$(PKG_CONFIG) --atleast-version=4.12 gtk4 || { printf '%s\n' 'GTK4 >= 4.12 development files are required.' >&2; exit 1; }
+	@$(PKG_CONFIG) --atleast-version=1.6 json-glib-1.0 || { printf '%s\n' 'JSON-GLib >= 1.6 development files are required.' >&2; exit 1; }
 
 build:
 	mkdir -p $@

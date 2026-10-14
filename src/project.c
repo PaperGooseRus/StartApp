@@ -1,4 +1,5 @@
 #include "project.h"
+#include "build_metadata.h"
 
 #include <string.h>
 
@@ -31,6 +32,11 @@ static void file_free(gpointer data)
 {
     ProjectFile *file = data;
     g_free(file->path);
+    g_free(file->settings_source);
+    g_clear_pointer(&file->quote_dirs, g_ptr_array_unref);
+    g_clear_pointer(&file->include_dirs, g_ptr_array_unref);
+    g_clear_pointer(&file->system_dirs, g_ptr_array_unref);
+    g_clear_pointer(&file->after_dirs, g_ptr_array_unref);
     g_free(file);
 }
 
@@ -38,6 +44,7 @@ static void edge_free(gpointer data)
 {
     ProjectEdge *edge = data;
     g_free(edge->include);
+    g_free(edge->settings_source);
     g_free(edge);
 }
 
@@ -48,6 +55,12 @@ void project_free(Project *project)
     g_ptr_array_unref(project->files);
     g_ptr_array_unref(project->edges);
     g_ptr_array_unref(project->notes);
+    g_free(project->build_directory);
+    g_free(project->configuration);
+    g_ptr_array_unref(project->configurations);
+    g_ptr_array_unref(project->targets);
+    g_ptr_array_unref(project->target_edges);
+    g_hash_table_unref(project->file_index);
     g_free(project);
 }
 
@@ -146,11 +159,23 @@ static gint file_compare(gconstpointer left, gconstpointer right)
 gint project_find_file(const Project *project, const char *path)
 {
     g_autofree char *normalized = model_path(path);
-    for (guint i = 0; i < project->files->len; i++) {
-        ProjectFile *file = g_ptr_array_index(project->files, i);
-        if (same_path(file->path, normalized)) return (gint)i;
-    }
-    return -1;
+#ifdef G_OS_WIN32
+    g_autofree char *folded = g_utf8_casefold(normalized, -1);
+    const char *key = folded;
+#else
+    const char *key = normalized;
+#endif
+    guint encoded = GPOINTER_TO_UINT(g_hash_table_lookup(project->file_index, key));
+    return encoded ? (gint)encoded - 1 : -1;
+}
+
+gint project_find_absolute(const Project *project, const char *path)
+{
+    g_autofree char *canonical = g_canonicalize_filename(path, NULL);
+    g_autoptr(GFile) root = g_file_new_for_path(project->root);
+    g_autoptr(GFile) candidate = g_file_new_for_path(canonical);
+    g_autofree char *relative = g_file_get_relative_path(root, candidate);
+    return relative ? project_find_file(project, relative) : -1;
 }
 
 gboolean project_path_matches(const char *path, const char *query)
@@ -231,6 +256,7 @@ static char *without_comments(const char *text)
 static void parse_includes(Project *project, guint index)
 {
     ProjectFile *file = g_ptr_array_index(project->files, index);
+    file->include_start = project->edges->len;
     g_autofree char *absolute = g_build_filename(project->root, file->path, NULL);
     g_autofree char *text = NULL;
     gsize length = 0;
@@ -269,9 +295,80 @@ static void parse_includes(Project *project, guint index)
                                    system, &edge->ambiguous);
         g_ptr_array_add(project->edges, edge);
     }
+    file->include_count = project->edges->len - file->include_start;
 }
 
-Project *project_scan(const char *directory, GError **error)
+static gint candidate_file(Project *project, const char *directory, const char *name,
+                            gboolean *outside)
+{
+    g_autofree char *path = g_build_filename(directory, name, NULL);
+    gint index = project_find_absolute(project, path);
+    if (index >= 0) return index;
+    if (g_file_test(path, G_FILE_TEST_IS_REGULAR)) *outside = TRUE;
+    return -1;
+}
+
+static gint resolve_context(Project *project, ProjectFile *from, ProjectFile *settings,
+                            ProjectEdge *edge, gboolean *outside)
+{
+    if (g_path_is_absolute(edge->include)) {
+        gint found = project_find_absolute(project, edge->include);
+        if (found < 0 && g_file_test(edge->include, G_FILE_TEST_IS_REGULAR)) *outside = TRUE;
+        return found;
+    }
+    if (!edge->system) {
+        g_autofree char *file_path = g_build_filename(project->root, from->path, NULL);
+        g_autofree char *directory = g_path_get_dirname(file_path);
+        gint found = candidate_file(project, directory, edge->include, outside);
+        if (found >= 0 || *outside) return found;
+    }
+    GPtrArray *groups[] = {settings->quote_dirs, settings->include_dirs, settings->system_dirs, settings->after_dirs};
+    for (guint i = edge->system ? 1 : 0; i < G_N_ELEMENTS(groups); i++) {
+        for (guint j = 0; groups[i] && j < groups[i]->len; j++) {
+            gint found = candidate_file(project, g_ptr_array_index(groups[i], j), edge->include, outside);
+            if (found >= 0 || *outside) return found;
+        }
+    }
+    return -1; /* Known settings never fall back to guessing a matching basename. */
+}
+
+static void apply_compile_contexts(Project *project)
+{
+    guint visited_count = 0;
+    for (guint root = 0; root < project->files->len; root++) {
+        ProjectFile *settings = g_ptr_array_index(project->files, root);
+        if (!settings->compile_settings) continue;
+        g_autoptr(GHashTable) visited = g_hash_table_new(g_direct_hash, g_direct_equal);
+        GQueue queue = G_QUEUE_INIT;
+        g_queue_push_tail(&queue, GUINT_TO_POINTER(root + 1));
+        while (!g_queue_is_empty(&queue)) {
+            guint index = GPOINTER_TO_UINT(g_queue_pop_head(&queue)) - 1;
+            if (g_hash_table_contains(visited, GUINT_TO_POINTER(index + 1))) continue;
+            g_hash_table_add(visited, GUINT_TO_POINTER(index + 1));
+            if (++visited_count > 200000) {
+                g_queue_clear(&queue);
+                g_ptr_array_add(project->notes, g_strdup("Compile context traversal limit reached; some header edges remain heuristic"));
+                return;
+            }
+            ProjectFile *file = g_ptr_array_index(project->files, index);
+            for (guint i = file->include_start; i < file->include_start + file->include_count; i++) {
+                ProjectEdge *edge = g_ptr_array_index(project->edges, i);
+                gboolean outside = FALSE;
+                gint found = resolve_context(project, file, settings, edge, &outside);
+                if (!edge->metadata) {
+                    edge->to = found; edge->outside_project = outside; edge->ambiguous = FALSE;
+                    edge->metadata = TRUE; edge->settings_source = g_strdup(settings->settings_source);
+                } else if (edge->to != found || edge->outside_project != outside) {
+                    edge->to = -1; edge->ambiguous = TRUE; edge->outside_project = FALSE;
+                }
+                if (found >= 0) g_queue_push_tail(&queue, GUINT_TO_POINTER((guint)found + 1));
+            }
+        }
+    }
+}
+
+Project *project_scan_build(const char *directory, const char *build_directory,
+                            const char *configuration, GError **error)
 {
     g_autofree char *canonical = g_canonicalize_filename(directory, NULL);
     g_autoptr(GFile) root = g_file_new_for_path(canonical);
@@ -288,6 +385,10 @@ Project *project_scan(const char *directory, GError **error)
     project->files = g_ptr_array_new_with_free_func(file_free);
     project->edges = g_ptr_array_new_with_free_func(edge_free);
     project->notes = g_ptr_array_new_with_free_func(g_free);
+    project->file_index = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    project->configurations = g_ptr_array_new_with_free_func(g_free);
+    project->targets = g_ptr_array_new_with_free_func(build_metadata_target_free);
+    project->target_edges = g_ptr_array_new_with_free_func(build_metadata_edge_free);
     if (!walk(project, "", 0, error)) {
         project_free(project);
         return NULL;
@@ -295,9 +396,25 @@ Project *project_scan(const char *directory, GError **error)
     g_ptr_array_sort(project->files, file_compare);
     for (guint i = 0; i < project->files->len; i++) {
         ProjectFile *file = g_ptr_array_index(project->files, i);
+#ifdef G_OS_WIN32
+        char *key = g_utf8_casefold(file->path, -1);
+#else
+        char *key = g_strdup(file->path);
+#endif
+        g_hash_table_insert(project->file_index, key, GUINT_TO_POINTER(i + 1));
+    }
+    build_metadata_import(project, build_directory, configuration);
+    for (guint i = 0; i < project->files->len; i++) {
+        ProjectFile *file = g_ptr_array_index(project->files, i);
         if (file->source) parse_includes(project, i);
     }
+    apply_compile_contexts(project);
     return project;
+}
+
+Project *project_scan(const char *directory, GError **error)
+{
+    return project_scan_build(directory, NULL, NULL, error);
 }
 
 char *project_summary(const Project *project)
@@ -315,12 +432,15 @@ char *project_summary(const Project *project)
     }
     return g_strdup_printf("%u файлов · %u C/C++ · %u файлов сборки\n"
         "%u локальных связей · %u неразрешённых #include\n"
+        "%u команд/групп · %u целей · %u связей целей\n"
         "%u пропущено · %u замечаний", project->files->len, source_count,
-        build_count, local, unresolved, project->skipped, project->notes->len);
+        build_count, local, unresolved, project->compile_units, project->targets->len,
+        project->target_edges->len, project->skipped, project->notes->len);
 }
 
 static void json_string(GString *output, const char *value)
 {
+    if (!value) { g_string_append(output, "null"); return; }
     g_string_append_c(output, '"');
     for (const unsigned char *p = (const unsigned char *)value; *p; p++) {
         if (*p == '"' || *p == '\\') g_string_append_printf(output, "\\%c", *p);
@@ -328,6 +448,16 @@ static void json_string(GString *output, const char *value)
         else g_string_append_c(output, (char)*p);
     }
     g_string_append_c(output, '"');
+}
+
+static void json_paths(GString *output, GPtrArray *paths)
+{
+    g_string_append_c(output, '[');
+    for (guint i = 0; paths && i < paths->len; i++) {
+        if (i) g_string_append_c(output, ',');
+        json_string(output, g_ptr_array_index(paths, i));
+    }
+    g_string_append_c(output, ']');
 }
 
 char *project_to_json(const Project *project)
@@ -340,9 +470,15 @@ char *project_to_json(const Project *project)
         if (i) g_string_append_c(output, ',');
         g_string_append(output, "{\"path\":");
         json_string(output, file->path);
-        g_string_append_printf(output, ",\"source\":%s,\"build_file\":%s}",
+        g_string_append_printf(output, ",\"source\":%s,\"build_file\":%s,\"compile_settings\":%s,\"settings_source\":",
                                file->source ? "true" : "false",
-                               file->build_file ? "true" : "false");
+                               file->build_file ? "true" : "false", file->compile_settings ? "true" : "false");
+        json_string(output, file->settings_source);
+        g_string_append(output, ",\"quote_dirs\":"); json_paths(output, file->quote_dirs);
+        g_string_append(output, ",\"include_dirs\":"); json_paths(output, file->include_dirs);
+        g_string_append(output, ",\"system_dirs\":"); json_paths(output, file->system_dirs);
+        g_string_append(output, ",\"after_dirs\":"); json_paths(output, file->after_dirs);
+        g_string_append_c(output, '}');
     }
     g_string_append(output, "],\"includes\":[");
     for (guint i = 0; i < project->edges->len; i++) {
@@ -359,8 +495,42 @@ char *project_to_json(const Project *project)
         g_string_append(output, ",\"include\":");
         json_string(output, edge->include);
         g_string_append_printf(output,
-            ",\"line\":%u,\"system\":%s,\"ambiguous\":%s}", edge->line,
-            edge->system ? "true" : "false", edge->ambiguous ? "true" : "false");
+            ",\"line\":%u,\"system\":%s,\"ambiguous\":%s,\"metadata\":%s,\"outside_project\":%s,\"settings_source\":", edge->line,
+            edge->system ? "true" : "false", edge->ambiguous ? "true" : "false",
+            edge->metadata ? "true" : "false", edge->outside_project ? "true" : "false");
+        json_string(output, edge->settings_source);
+        g_string_append_c(output, '}');
+    }
+    g_string_append(output, "],\"build_directory\":"); json_string(output, project->build_directory);
+    g_string_append(output, ",\"configuration\":"); json_string(output, project->configuration);
+    g_string_append(output, ",\"configurations\":"); json_paths(output, project->configurations);
+    g_string_append(output, ",\"targets\":[");
+    for (guint i = 0; i < project->targets->len; i++) {
+        ProjectTarget *target = g_ptr_array_index(project->targets, i);
+        if (i) g_string_append_c(output, ',');
+        g_string_append(output, "{\"id\":"); json_string(output, target->id);
+        g_string_append(output, ",\"name\":"); json_string(output, target->name);
+        g_string_append(output, ",\"type\":"); json_string(output, target->type);
+        g_string_append(output, ",\"artifact\":"); json_string(output, target->artifact);
+        g_string_append(output, ",\"definition\":"); json_string(output, target->definition);
+        g_string_append_printf(output, ",\"line\":%u,\"sources\":[", target->line);
+        for (guint j = 0; j < target->sources->len; j++) {
+            if (j) g_string_append_c(output, ',');
+            ProjectFile *file = g_ptr_array_index(project->files, g_array_index(target->sources, guint, j));
+            json_string(output, file->path);
+        }
+        g_string_append(output, "]}");
+    }
+    g_string_append(output, "],\"target_dependencies\":[");
+    for (guint i = 0; i < project->target_edges->len; i++) {
+        ProjectTargetEdge *edge = g_ptr_array_index(project->target_edges, i);
+        ProjectTarget *from = g_ptr_array_index(project->targets, edge->from);
+        ProjectTarget *to = g_ptr_array_index(project->targets, edge->to);
+        if (i) g_string_append_c(output, ',');
+        g_string_append(output, "{\"from\":"); json_string(output, from->id);
+        g_string_append(output, ",\"to\":"); json_string(output, to->id);
+        g_string_append(output, ",\"definition\":"); json_string(output, edge->definition);
+        g_string_append_printf(output, ",\"line\":%u}", edge->line);
     }
     g_string_append(output, "],\"notes\":[");
     for (guint i = 0; i < project->notes->len; i++) {
