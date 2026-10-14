@@ -64,12 +64,21 @@ jobs:
           Remove-Item Env:GDK_PIXBUF_MODULE_FILE -ErrorAction SilentlyContinue
           Remove-Item Env:GDK_PIXBUF_MODULEDIR -ErrorAction SilentlyContinue
           $env:STARTAPP_SMOKE_SCREENSHOT = "$env:RUNNER_TEMP/portable-smoke.png"
-          $process = Start-Process "$app/startapp-cli.exe" -ArgumentList '--smoke-test' -WorkingDirectory $env:RUNNER_TEMP -PassThru
-          if (-not $process.WaitForExit(45000)) { $process.Kill(); throw 'Portable GUI timed out' }
-          if ($process.ExitCode -ne 0) { throw "Portable GUI failed: $($process.ExitCode)" }
-          $process = Start-Process "$app/startapp.exe" -ArgumentList '--smoke-test' -WorkingDirectory $env:RUNNER_TEMP -PassThru
-          if (-not $process.WaitForExit(45000)) { $process.Kill(); throw 'Desktop executable timed out' }
-          if ($process.ExitCode -ne 0) { throw "Desktop executable failed: $($process.ExitCode)" }
+          foreach ($exe in @('startapp-cli.exe', 'startapp.exe')) {
+            $stdout = "$env:RUNNER_TEMP/portable-$exe.stdout"
+            $stderr = "$env:RUNNER_TEMP/portable-$exe.stderr"
+            $process = Start-Process "$app/$exe" -ArgumentList '--smoke-test' -WorkingDirectory $env:RUNNER_TEMP -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            if (-not $process.WaitForExit(45000)) { $process.Kill(); throw "Portable $exe timed out" }
+            if ($process.ExitCode -ne 0) {
+              foreach ($path in @($stdout, $stderr)) {
+                Get-Content $path -Tail 30 | ForEach-Object {
+                  $line = $_.Replace('%', '%25').Replace("`r", '%0D')
+                  Write-Output "::error title=Portable smoke test::$line"
+                }
+              }
+              throw "Portable $exe failed: $($process.ExitCode)"
+            }
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: StartApp-Windows-x64
@@ -81,3 +90,5 @@ jobs:
           path: |
             build/windows/Testing/Temporary/LastTest.log
             build/windows/smoke-ui.png
+            ${{ runner.temp }}/portable-*.stdout
+            ${{ runner.temp }}/portable-*.stderr
