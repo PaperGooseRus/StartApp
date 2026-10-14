@@ -15,6 +15,7 @@ void graph_set_overview(Graph *graph, gboolean overview);
 void graph_set_target_mode(Graph *graph, gboolean active);
 void graph_select_target(Graph *graph, gint index);
 gboolean graph_activate_at(Graph *graph, double x, double y);
+gboolean graph_node_center(Graph *graph, guint index, double *x, double *y);
 void graph_free(Graph *graph);
 
 #endif

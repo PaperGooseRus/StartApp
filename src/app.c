@@ -976,9 +976,11 @@ static gboolean smoke_tick(gpointer data)
         g_autofree char *text = NULL;
         if (!g_file_get_contents(path, &text, NULL, NULL) || !strstr(text, "extra.h")) goto failed;
         if (!take_screenshot(app)) goto failed;
-        /* Hit the first inbound/outbound column node through the graph's click path. */
-        if (!graph_activate_at(app->graph,
-            gtk_widget_get_width(graph_widget(app->graph)) - 70, 110)) goto failed;
+        /* Use the rendered node: native window frames and screen sizes affect layout. */
+        double x, y;
+        gint header = project_find_file(app->project, "api.h");
+        if (header < 0 || !graph_node_center(app->graph, (guint)header, &x, &y) ||
+            !graph_activate_at(app->graph, x, y)) goto failed;
         if (!app->selected || g_str_equal(app->selected, "main.c")) goto failed;
         app->smoke_stage++;
         return G_SOURCE_CONTINUE;
@@ -1127,7 +1129,8 @@ static gboolean smoke_tick(gpointer data)
         return G_SOURCE_CONTINUE;
     }
     if (app->smoke_stage == 18) {
-        if (!graph_activate_at(app->graph, 40, 110) || app->selected_target != 0 ||
+        double x, y;
+        if (!graph_node_center(app->graph, 0, &x, &y) || !graph_activate_at(app->graph, x, y) || app->selected_target != 0 ||
             gtk_drop_down_get_selected(app->target_picker) != 1 ||
             !gtk_text_buffer_get_modified(app->buffer)) goto failed;
         gboolean handled = FALSE;
@@ -1204,7 +1207,7 @@ static void activate(GtkApplication *application, gpointer data)
     theme_install();
     app->window = GTK_WINDOW(gtk_application_window_new(application));
     gtk_window_set_title(app->window, "StartApp · карта проекта");
-    gtk_window_set_default_size(app->window, 1420, 900);
+    gtk_window_set_default_size(app->window, app->smoke ? 1200 : 1420, app->smoke ? 800 : 900);
     /* No custom titlebar: the OS/window manager supplies window controls. */
     gtk_window_set_decorated(app->window, TRUE);
     g_signal_connect(app->window, "close-request", G_CALLBACK(close_requested), app);

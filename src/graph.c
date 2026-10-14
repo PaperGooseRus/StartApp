@@ -271,6 +271,15 @@ static void draw(GtkDrawingArea *area, cairo_t *cr, int width, int height,
     }
 }
 
+gboolean graph_node_center(Graph *graph, guint index, double *x, double *y)
+{
+    Node *node = find_node(graph, index);
+    if (!node) return FALSE;
+    *x = node->x + node->width / 2;
+    *y = node->y + node->height / 2;
+    return TRUE;
+}
+
 gboolean graph_activate_at(Graph *graph, double x, double y)
 {
     for (guint i = 0; i < graph->nodes->len; i++) {
@@ -327,7 +336,7 @@ Graph *graph_new(GraphOpenFile open_file, GraphSelectTarget select_target, gpoin
     graph->select_target = select_target;
     graph->user_data = user_data;
     graph->area = gtk_drawing_area_new();
-    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(graph->area), 280);
+    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(graph->area), 240);
     gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(graph->area), 500);
     gtk_widget_set_hexpand(graph->area, TRUE);
     gtk_widget_set_vexpand(graph->area, TRUE);
