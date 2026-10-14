@@ -1,6 +1,6 @@
 # Метаданные сборки
 
-StartApp 0.3 читает `compile_commands.json` и CMake File API codemodel v2.
+StartApp 0.4 читает `compile_commands.json` и CMake File API codemodel v2/toolchains v1.
 Он не запускает CMake, компилятор или команды из базы компиляции при открытии
 папки. Подготовьте метаданные своего проекта привычным способом, затем
 выберите каталог сборки в приложении.
@@ -12,6 +12,7 @@ StartApp 0.3 читает `compile_commands.json` и CMake File API codemodel v2
 ```sh
 mkdir -p build/.cmake/api/v1/query
 touch build/.cmake/api/v1/query/codemodel-v2
+touch build/.cmake/api/v1/query/toolchains-v1
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 ```
 
@@ -20,6 +21,7 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COM
 ```powershell
 New-Item -ItemType Directory -Force 'build/.cmake/api/v1/query' | Out-Null
 New-Item -ItemType File -Force 'build/.cmake/api/v1/query/codemodel-v2' | Out-Null
+New-Item -ItemType File -Force 'build/.cmake/api/v1/query/toolchains-v1' | Out-Null
 cmake -S . -B build -G 'Ninja Multi-Config' -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 ```
 
@@ -50,7 +52,7 @@ StartApp использует пути включений из выбранны�
 Стрелка цели направлена к её зависимости. Выбор цели показывает тип,
 число индексируемых исходников и путь артефакта. Ссылки под графом ведут к строкам
 определения и зависимостей в CMake, если File API содержит их происхождение.
-В списке доступны все импортированные цели, даже если обзор ограничен 60 узлами.
+В списке доступны все импортированные цели, даже если текущая карта ограничена 200 узлами.
 
 Конфигурации не объединяются: без явного выбора используется первая из File API.
 Несуществующая конфигурация оставляет граф целей пустым и выдаёт замечание.
@@ -85,8 +87,27 @@ StartApp использует пути включений из выбранны�
 
 ## JSON и ограничения
 
+Вкладка «Сборка» показывает найденные инструменты отдельно от настроенного
+генератора. Имя генератора, его multi-config режим и версия CMake берутся из
+индекса File API; `toolchains-v1` даёт язык, идентификатор, версию и путь компилятора.
+Без reply читается `CMakeCache.txt` (генератор, конфигурации, пути C/C++ компиляторов).
+Без сведений о toolchain база компиляции даёт только имя команды; её версия
+не угадывается. Для выбранной цели показан артефакт именно текущей конфигурации.
+
+`CMakePresets.json` и `CMakeUserPresets.json` читаются даже без каталога сборки.
+Импортируются configure/build-пресеты, наследование, configurePreset,
+генератор, binaryDir и конфигурация. Локальные JSON include внутри проекта
+обходятся с ограничением 32 файла/8 уровней; наследование защищено от циклов.
+Скрытые пресеты используются для наследования и остаются в JSON, но не занимают
+панель. Значения binaryDir отображаются как объявлены, без раскрытия макросов.
+Условия, переменные окружения, toolchainFile, workflow/test/package-пресеты
+и макросы include пока не интерпретируются: наличие объявления не подтверждает
+его применимость на текущей ОС. Пресет не выбирается и не запускается автоматически.
+
 `--inspect` сохраняет `files`, `includes`, `targets`, `target_dependencies`,
 `build_directory`, `configuration`, `configurations` и `notes`.
+Объект `build_profile` содержит версию CMake, генератор, multi_config,
+массивы `compilers` и `presets` с источниками данных.
 У файлов есть пути поиска и `settings_source`; у включений — признаки
 `metadata`, `ambiguous`, `outside_project` и источник настроек. Цели содержат
 идентификатор CMake, имя, тип, артефакт, исходники и место определения.

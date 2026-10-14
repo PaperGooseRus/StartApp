@@ -1,6 +1,7 @@
 #include "document.h"
 #include "project.h"
 #include "build_metadata.h"
+#include "graph_layout.h"
 #include <json-glib/json-glib.h>
 #include <glib/gstdio.h>
 #include <string.h>
@@ -592,6 +593,97 @@ static void test_explicit_build_folder(void)
     remove_tree(root);
 }
 
+static void test_layout(void)
+{
+    g_autoptr(GArray) edges = g_array_new(FALSE, FALSE, sizeof(LayoutEdge));
+    LayoutEdge links[] = {{0,1},{0,2},{1,3},{2,3},{3,4},{4,3},{4,5},{0,5},{6,6},{90,1},{1,90}};
+    g_array_append_vals(edges, links, G_N_ELEMENTS(links));
+    GraphLayout *layout = graph_layout_build(7, edges), *again = graph_layout_build(7, edges);
+    g_assert_cmpuint(layout->cycles, ==, 2);
+    LayoutNode a = g_array_index(layout->nodes, LayoutNode, 3), b = g_array_index(layout->nodes, LayoutNode, 4);
+    g_assert_true(a.cycle); g_assert_true(b.cycle);
+    g_assert_cmpuint(a.component, ==, b.component);
+    g_assert_cmpuint(a.layer, ==, b.layer);
+    for (guint i = 0; i < 7; i++) {
+        LayoutNode node = g_array_index(layout->nodes, LayoutNode, i), other = g_array_index(again->nodes, LayoutNode, i);
+        g_assert_cmpfloat(node.x, ==, other.x); g_assert_cmpfloat(node.y, ==, other.y);
+        g_assert_cmpfloat(node.x + 200, <=, layout->width); g_assert_cmpfloat(node.y + 62, <=, layout->height);
+        for (guint j = i + 1; j < 7; j++) {
+            LayoutNode next = g_array_index(layout->nodes, LayoutNode, j);
+            g_assert_true(node.x + 200 <= next.x || next.x + 200 <= node.x || node.y + 62 <= next.y || next.y + 62 <= node.y);
+        }
+    }
+    for (guint i = 0; i < G_N_ELEMENTS(links); i++) {
+        LayoutEdge edge = links[i]; if (edge.from >= 7 || edge.to >= 7) continue;
+        LayoutNode from = g_array_index(layout->nodes, LayoutNode, edge.from), to = g_array_index(layout->nodes, LayoutNode, edge.to);
+        if (from.component != to.component) g_assert_cmpuint(from.layer, <, to.layer);
+    }
+    graph_layout_free(layout); graph_layout_free(again);
+    layout = graph_layout_build(0, edges); g_assert_cmpuint(layout->nodes->len, ==, 0); graph_layout_free(layout);
+}
+
+static void test_layout_bounds(void)
+{
+    g_autoptr(GArray) edges = g_array_new(FALSE, FALSE, sizeof(LayoutEdge));
+    for (guint i = 0; i < 299; i++) { LayoutEdge e = {i, i+1}; g_array_append_val(edges, e); }
+    GraphLayout *layout = graph_layout_build(300, edges);
+    g_assert_cmpuint(layout->nodes->len, ==, GRAPH_LAYOUT_LIMIT);
+    g_assert_cmpuint(g_array_index(layout->nodes, LayoutNode, GRAPH_LAYOUT_LIMIT-1).layer, ==, GRAPH_LAYOUT_LIMIT-1);
+    graph_layout_free(layout);
+}
+
+static void test_build_profile(void)
+{
+    g_autofree char *root = fixture(); cmake_fixture(root);
+    put(root, "build/.cmake/api/v1/reply/index-2027.json", "{\"cmake\":{\"version\":{\"string\":\"3.31\"},"
+        "\"generator\":{\"name\":\"Ninja Multi-Config\",\"multiConfig\":true}},\"objects\":["
+        "{\"kind\":\"codemodel\",\"version\":{\"major\":2},\"jsonFile\":\"model.json\"},"
+        "{\"kind\":\"toolchains\",\"version\":{\"major\":1},\"jsonFile\":\"toolchains.json\"}]}");
+    put(root, "build/.cmake/api/v1/reply/toolchains.json", "{\"toolchains\":[{\"language\":\"C\","
+        "\"compiler\":{\"id\":\"GNU\",\"version\":\"14.2\",\"path\":\"C:/toolchain/bin/gcc.exe\"}},{\"language\":\"CXX\",\"compiler\":{}}]}");
+    Project *project = scan_config(root, "Release");
+    g_assert_cmpstr(project->generator, ==, "Ninja Multi-Config"); g_assert_true(project->multi_config);
+    g_assert_cmpstr(project->cmake_version, ==, "3.31"); g_assert_cmpuint(project->compilers->len, ==, 2);
+    ProjectCompiler *compiler = g_ptr_array_index(project->compilers, 0);
+    g_assert_cmpstr(compiler->version, ==, "14.2");
+    g_autofree char *text = project_build_summary(project, 0);
+    g_assert_nonnull(strstr(text, "Release")); g_assert_nonnull(strstr(text, "app")); g_assert_nonnull(strstr(text, "GNU"));
+    g_autofree char *json = project_to_json(project); g_autoptr(JsonParser) parser = json_parser_new();
+    g_assert_true(json_parser_load_from_data(parser, json, -1, NULL));
+    g_assert_nonnull(strstr(json, "\"version\":\"14.2\""));
+    project_free(project); remove_tree(root);
+}
+
+static void test_cache_profile(void)
+{
+    g_autofree char *root = fixture(); put(root, "CMakeLists.txt", "project(example C)\n");
+    put(root, "build/CMakeCache.txt", "# generated\nCMAKE_GENERATOR:INTERNAL=Ninja\nCMAKE_BUILD_TYPE:STRING=Debug\n"
+        "CMAKE_C_COMPILER:FILEPATH=/toolchain/cc\nCMAKE_CXX_COMPILER:FILEPATH=/toolchain/c++\n");
+    Project *project = scan(root);
+    g_assert_cmpstr(project->generator, ==, "Ninja"); g_assert_cmpstr(project->configuration, ==, "Debug");
+    g_assert_cmpuint(project->compilers->len, ==, 2); g_assert_null(project->cmake_version);
+    g_assert_cmpuint(project->targets->len, ==, 0);
+    project_free(project); remove_tree(root);
+}
+
+static void test_presets(void)
+{
+    g_autofree char *root = fixture();
+    put(root, "CMakePresets.json", "{\"version\":6,\"include\":[\"config/base.json\"],"
+        "\"configurePresets\":[{\"name\":\"debug\",\"inherits\":\"base\",\"cacheVariables\":{\"CMAKE_BUILD_TYPE\":{\"type\":\"STRING\",\"value\":\"Debug\"}}}],"
+        "\"buildPresets\":[{\"name\":\"build-release\",\"configurePreset\":\"debug\",\"configuration\":\"Release\"}]}");
+    put(root, "config/base.json", "{\"configurePresets\":[{\"name\":\"base\",\"hidden\":true,\"generator\":\"Ninja Multi-Config\",\"binaryDir\":\"${sourceDir}/build\"}]}");
+    Project *project = scan(root); g_assert_cmpuint(project->presets->len, ==, 3);
+    ProjectPreset *preset = g_ptr_array_index(project->presets, 0);
+    g_assert_cmpstr(preset->generator, ==, "Ninja Multi-Config"); g_assert_cmpstr(preset->configuration, ==, "Debug");
+    preset = g_ptr_array_index(project->presets, 1);
+    g_assert_cmpstr(preset->configuration, ==, "Release"); g_assert_cmpstr(preset->generator, ==, "Ninja Multi-Config");
+    g_assert_null(project->configuration); /* Declared presets are not active metadata. */
+    project_free(project);
+    put(root, "config/base.json", "{\"configurePresets\":[{\"name\":\"base\",\"inherits\":[\"debug\",\"base\"]}]}");
+    project = scan(root); g_assert_cmpuint(project->notes->len, >, 0); project_free(project); remove_tree(root);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -620,5 +712,10 @@ int main(int argc, char **argv)
     g_test_add_func("/metadata/reply-path-traversal", test_cmake_invalid_reply);
     g_test_add_func("/metadata/compiler-configurations", test_compiler_configurations);
     g_test_add_func("/metadata/explicit-unicode-build-folder", test_explicit_build_folder);
+    g_test_add_func("/graph/layers-cycles-no-overlap-and-stability", test_layout);
+    g_test_add_func("/graph/bounded-long-chain", test_layout_bounds);
+    g_test_add_func("/metadata/build-profile", test_build_profile);
+    g_test_add_func("/metadata/cache-profile", test_cache_profile);
+    g_test_add_func("/metadata/presets-includes-inheritance-and-cycles", test_presets);
     return g_test_run();
 }

@@ -29,6 +29,10 @@ int main(int argc, char **argv)
     g_assert_no_error(error);
     g_assert_nonnull(project);
     g_assert_cmpuint(project->compile_units, >=, 8);
+    g_assert_nonnull(project->generator); g_assert_nonnull(project->cmake_version);
+    g_assert_cmpuint(project->compilers->len, >=, 1);
+    ProjectCompiler *compiler = g_ptr_array_index(project->compilers, 0);
+    g_assert_nonnull(compiler->id); g_assert_nonnull(compiler->version); g_assert_nonnull(compiler->path);
     dependency(project, "startapp", "startapp_ui");
     dependency(project, "startapp_ui", "startapp_core");
     ProjectTarget *app = g_ptr_array_index(project->targets, target_named(project, "startapp"));

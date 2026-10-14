@@ -7,6 +7,7 @@ if [[ ${MSYSTEM:-} != UCRT64 ]]; then
 fi
 mkdir -p build/windows/.cmake/api/v1/query
 touch build/windows/.cmake/api/v1/query/codemodel-v2
+touch build/windows/.cmake/api/v1/query/toolchains-v1
 cmake -S . -B build/windows -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 cmake --build build/windows --parallel 2
 ctest --test-dir build/windows -R '^(core|metadata-self)$' --output-on-failure
