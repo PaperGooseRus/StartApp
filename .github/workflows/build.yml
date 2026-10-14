@@ -16,7 +16,7 @@ jobs:
       - name: Build and package
         run: sh scripts/build-linux.sh
       - name: Test GUI
-        run: xvfb-run -a -s '-screen 0 1600x1000x24' dbus-run-session -- ctest --test-dir build/linux -R '^gui$' --output-on-failure
+        run: xvfb-run -a -s '-screen 0 1600x1000x24' dbus-run-session -- bash scripts/ci-gui-test.sh build/linux
       - uses: actions/upload-artifact@v4
         with:
           name: StartApp-Linux-x64
@@ -49,7 +49,7 @@ jobs:
       - name: Build, core tests and portable ZIP
         run: bash scripts/build-windows.sh
       - name: Test native GTK4 GUI
-        run: ctest --test-dir build/windows -R '^gui$' --output-on-failure
+        run: bash scripts/ci-gui-test.sh build/windows
       - name: Test relocated portable ZIP without MSYS2 in PATH
         shell: pwsh
         run: |
