@@ -1,10 +1,25 @@
-#define _XOPEN_SOURCE 700
 #include "document.h"
 #include "project.h"
 #include <glib/gstdio.h>
 #include <string.h>
+#ifndef G_OS_WIN32
 #include <sys/stat.h>
-#include <unistd.h>
+#endif
+
+static gboolean make_symlink(const char *target, const char *path)
+{
+    g_autoptr(GFile) file = g_file_new_for_path(path);
+    g_autoptr(GError) error = NULL;
+    if (g_file_make_symbolic_link(file, target, NULL, &error)) return TRUE;
+#ifdef G_OS_WIN32
+    /* Windows may require Developer Mode or elevation to create symbolic links. */
+    g_test_skip(error->message);
+    return FALSE;
+#else
+    g_error("Cannot create fixture symlink: %s", error->message);
+    return FALSE;
+#endif
+}
 
 static char *fixture(void)
 {
@@ -117,10 +132,10 @@ static void test_exclusions(void)
     g_autofree char *build = write_file(root, "build/generated.c", "");
     g_autofree char *modules = write_file(root, "node_modules/module.c", "");
     g_autofree char *link = g_build_filename(root, "link.c", NULL);
-    g_assert_cmpint(symlink(main, link), ==, 0);
+    gboolean linked = make_symlink(main, link);
     Project *project = scan(root);
     g_assert_cmpuint(project->files->len, ==, 1);
-    g_assert_cmpuint(project->skipped, ==, 1);
+    g_assert_cmpuint(project->skipped, ==, linked ? 1 : 0);
     project_free(project);
     remove_tree(root);
 }
@@ -165,7 +180,9 @@ static void test_save_and_rescan(void)
     g_autofree char *root = fixture();
     g_autofree char *path = write_file(root, "main.c", "int main(void) { return 0; }\n");
     g_autofree char *header = write_file(root, "api.h", "");
+#ifndef G_OS_WIN32
     g_assert_cmpint(g_chmod(path, 0640), ==, 0);
+#endif
     Document *document = open_document(path);
     GError *error = NULL;
     g_assert_true(document_save(document, "#include \"api.h\"\n", &error));
@@ -174,9 +191,11 @@ static void test_save_and_rescan(void)
     g_assert_cmpuint(project->edges->len, ==, 1);
     ProjectEdge *edge = g_ptr_array_index(project->edges, 0);
     g_assert_cmpint(edge->to, >=, 0);
+#ifndef G_OS_WIN32
     struct stat st;
     g_assert_cmpint(stat(path, &st), ==, 0);
     g_assert_cmpuint(st.st_mode & 0777, ==, 0640);
+#endif
     g_assert_true(document_save(document, "// second save\n", &error));
     g_assert_no_error(error);
     document_free(document);
@@ -240,7 +259,11 @@ static void test_symlink_replaced(void)
     g_autofree char *target = write_file(root, "other.c", "leave me alone\n");
     Document *document = open_document(path);
     g_assert_cmpint(g_unlink(path), ==, 0);
-    g_assert_cmpint(symlink(target, path), ==, 0);
+    if (!make_symlink(target, path)) {
+        document_free(document);
+        remove_tree(root);
+        return;
+    }
     GError *error = NULL;
     g_assert_false(document_save(document, "replacement\n", &error));
     g_assert_error(error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED);

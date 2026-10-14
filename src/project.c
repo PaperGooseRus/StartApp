@@ -1,13 +1,31 @@
-#define _XOPEN_SOURCE 700
 #include "project.h"
 
-#include <errno.h>
-#include <stdlib.h>
 #include <string.h>
 
 #define MAX_FILES 10000u
 #define MAX_DEPTH 64u
 #define MAX_TEXT_SIZE (2u * 1024u * 1024u)
+
+/* Model paths use '/', even on Windows. Physical paths are handled by GIO. */
+static char *model_path(const char *path)
+{
+    char *normalized = g_strdup(path);
+#ifdef G_OS_WIN32
+    for (char *p = normalized; *p; p++) if (*p == '\\') *p = '/';
+#endif
+    return normalized;
+}
+
+static gboolean same_path(const char *left, const char *right)
+{
+#ifdef G_OS_WIN32
+    g_autofree char *a = g_utf8_casefold(left, -1);
+    g_autofree char *b = g_utf8_casefold(right, -1);
+    return g_str_equal(a, b);
+#else
+    return g_str_equal(left, right);
+#endif
+}
 
 static void file_free(gpointer data)
 {
@@ -95,7 +113,7 @@ static gboolean walk(Project *project, const char *relative, guint depth,
             project->skipped++;
             continue;
         }
-        g_autofree char *path = g_build_filename(relative, name, NULL);
+        g_autofree char *path = *relative ? g_strconcat(relative, "/", name, NULL) : g_strdup(name);
         GFileType type = g_file_info_get_file_type(info);
         if (type == G_FILE_TYPE_DIRECTORY && !ignored_directory(name)) {
             g_autoptr(GError) child_error = NULL;
@@ -127,9 +145,10 @@ static gint file_compare(gconstpointer left, gconstpointer right)
 
 gint project_find_file(const Project *project, const char *path)
 {
+    g_autofree char *normalized = model_path(path);
     for (guint i = 0; i < project->files->len; i++) {
         ProjectFile *file = g_ptr_array_index(project->files, i);
-        if (g_str_equal(file->path, path)) return (gint)i;
+        if (same_path(file->path, normalized)) return (gint)i;
     }
     return -1;
 }
@@ -150,23 +169,26 @@ static gint resolve_include(Project *project, const char *from, const char *name
                             gboolean system, gboolean *ambiguous)
 {
     if (g_path_is_absolute(name)) return -1;
+    g_autofree char *normalized = model_path(name);
     if (!system) {
         g_autofree char *directory = g_path_get_dirname(from);
         g_autofree char *combined = g_build_filename(project->root, directory, name, NULL);
         g_autofree char *canonical = g_canonicalize_filename(combined, NULL);
-        g_autofree char *prefix = g_str_equal(project->root, G_DIR_SEPARATOR_S) ?
-            g_strdup(G_DIR_SEPARATOR_S) : g_strconcat(project->root, G_DIR_SEPARATOR_S, NULL);
-        if (g_str_has_prefix(canonical, prefix)) {
-            gint found = project_find_file(project, canonical + strlen(prefix));
+        g_autoptr(GFile) root = g_file_new_for_path(project->root);
+        g_autoptr(GFile) candidate = g_file_new_for_path(canonical);
+        g_autofree char *relative = g_file_get_relative_path(root, candidate);
+        if (relative) {
+            gint found = project_find_file(project, relative);
             if (found >= 0) return found;
         }
     }
-    gint found = project_find_file(project, name);
+    gint found = project_find_file(project, normalized);
     if (found >= 0) return found;
-    g_autofree char *suffix = g_strconcat(G_DIR_SEPARATOR_S, name, NULL);
+    g_autofree char *suffix = g_strconcat("/", normalized, NULL);
     for (guint i = 0; i < project->files->len; i++) {
         ProjectFile *file = g_ptr_array_index(project->files, i);
-        if (!g_str_has_suffix(file->path, suffix)) continue;
+        gsize path_len = strlen(file->path), suffix_len = strlen(suffix);
+        if (path_len < suffix_len || !same_path(file->path + path_len - suffix_len, suffix)) continue;
         if (found >= 0) {
             *ambiguous = TRUE;
             return -1;
@@ -251,21 +273,18 @@ static void parse_includes(Project *project, guint index)
 
 Project *project_scan(const char *directory, GError **error)
 {
-    char *canonical = realpath(directory, NULL);
-    if (!canonical) {
-        g_set_error(error, G_IO_ERROR, g_io_error_from_errno(errno),
-                    "Cannot open project: %s", g_strerror(errno));
-        return NULL;
-    }
-    if (!g_file_test(canonical, G_FILE_TEST_IS_DIR)) {
+    g_autofree char *canonical = g_canonicalize_filename(directory, NULL);
+    g_autoptr(GFile) root = g_file_new_for_path(canonical);
+    g_autoptr(GFileInfo) info = g_file_query_info(root, G_FILE_ATTRIBUTE_STANDARD_TYPE,
+                                               G_FILE_QUERY_INFO_NONE, NULL, error);
+    if (!info) return NULL;
+    if (g_file_info_get_file_type(info) != G_FILE_TYPE_DIRECTORY) {
         g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_NOT_DIRECTORY,
                             "Select a project directory");
-        free(canonical);
         return NULL;
     }
     Project *project = g_new0(Project, 1);
     project->root = g_strdup(canonical);
-    free(canonical);
     project->files = g_ptr_array_new_with_free_func(file_free);
     project->edges = g_ptr_array_new_with_free_func(edge_free);
     project->notes = g_ptr_array_new_with_free_func(g_free);

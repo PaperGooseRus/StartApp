@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=StartApp
+Comment=Project dependency map and source editor
+Comment[ru]=Карта зависимостей проекта и редактор исходников
+Exec=startapp %f
+Icon=io.github.PaperGooseRus.StartApp
+Terminal=false
+Categories=Development;IDE;

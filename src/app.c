@@ -256,11 +256,11 @@ static void populate_tree(App *app)
         ProjectFile *file = g_ptr_array_index(app->project->files, i);
         if (!project_path_matches(file->path, query)) continue;
         matches++;
-        g_auto(GStrv) parts = g_strsplit(file->path, G_DIR_SEPARATOR_S, -1);
+        g_auto(GStrv) parts = g_strsplit(file->path, "/", -1);
         GListStore *parent = root;
         GString *prefix = g_string_new(NULL);
         for (guint j = 0; parts[j]; j++) {
-            if (j) g_string_append_c(prefix, G_DIR_SEPARATOR);
+            if (j) g_string_append_c(prefix, '/');
             g_string_append(prefix, parts[j]);
             gboolean directory = parts[j + 1] != NULL;
             GListStore *children = directory ? g_hash_table_lookup(directories, prefix->str) : NULL;
@@ -685,7 +685,11 @@ static gboolean take_screenshot(App *app)
     GskRenderer *renderer = gtk_native_get_renderer(GTK_NATIVE(app->window));
     graphene_rect_t bounds = GRAPHENE_RECT_INIT(0, 0, width, height);
     GdkTexture *texture = gsk_renderer_render_texture(renderer, node, &bounds);
-    gboolean saved = gdk_texture_save_to_png(texture, "build/smoke-ui.png");
+    const char *screenshot = g_getenv("STARTAPP_SMOKE_SCREENSHOT");
+    if (!screenshot) screenshot = "build/smoke-ui.png";
+    g_autofree char *parent = g_path_get_dirname(screenshot);
+    gboolean saved = g_mkdir_with_parents(parent, 0700) == 0 &&
+                     gdk_texture_save_to_png(texture, screenshot);
     g_object_unref(texture);
     gsk_render_node_unref(node);
     return saved;
