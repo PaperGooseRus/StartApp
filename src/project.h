@@ -42,6 +42,12 @@ typedef struct {
     guint line;
 } ProjectTargetEdge;
 
+typedef struct { char *language, *id, *version, *path, *source; } ProjectCompiler;
+typedef struct {
+    char *name, *display_name, *kind, *generator, *binary_directory, *configuration, *configure_preset, *source;
+    gboolean hidden;
+} ProjectPreset;
+
 typedef struct {
     char *root;
     GPtrArray *files;
@@ -55,6 +61,9 @@ typedef struct {
     GPtrArray *target_edges;
     guint compile_units;
     GHashTable *file_index;
+    char *cmake_version, *generator;
+    gboolean multi_config;
+    GPtrArray *compilers, *presets;
 } Project;
 
 Project *project_scan(const char *directory, GError **error);
@@ -66,5 +75,6 @@ gint project_find_absolute(const Project *project, const char *path);
 gboolean project_path_matches(const char *relative_path, const char *query);
 char *project_summary(const Project *project);
 char *project_to_json(const Project *project);
+char *project_build_summary(const Project *project, gint target);
 
 #endif

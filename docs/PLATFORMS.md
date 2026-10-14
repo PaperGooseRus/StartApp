@@ -13,7 +13,7 @@ Workflow **Linux and Windows** собирает Linux-архив и перено
   В командной строке используйте `startapp-cli.exe`.
 - **Linux x64:** архив CI собирается в Ubuntu 24.04. Распакуйте и запустите
   `bin/startapp`. GTK4 >= 4.12 и совместимые системные библиотеки должны быть
-  установлены, включая JSON-GLib >= 1.6. Для другого дистрибутива надёжнее собрать программу на нём.
+  установлены, включая JSON-GLib >= 1.6 и GtkSourceView >= 5.4. Для другого дистрибутива надёжнее собрать программу на нём.
   Локальный архив, собранный в Debian 13, рассчитан на Debian 13: он не является
   универсальным статическим Linux-пакетом.
 
@@ -26,13 +26,13 @@ Ubuntu 24.04 / Debian 13:
 
 ```sh
 sudo apt-get update
-sudo apt-get install build-essential pkg-config libgtk-4-dev libjson-glib-dev cmake ninja-build
+sudo apt-get install build-essential pkg-config libgtk-4-dev libjson-glib-dev libgtksourceview-5-dev cmake ninja-build
 sh scripts/build-linux.sh
 ./build/linux/startapp /путь/к/проекту
 ```
 
 Скрипт выполняет сборку Release, тесты ядра и создаёт
-`build/linux/StartApp-0.3.0-Linux-x86_64.tar.gz` (имя архитектуры зависит от машины).
+`build/linux/StartApp-0.4.0-Linux-x86_64.tar.gz` (имя архитектуры зависит от машины).
 
 Установка бинарника, ярлыка меню и иконки для своего пользователя:
 
@@ -65,6 +65,7 @@ pacman -S --needed \
   mingw-w64-ucrt-x86_64-gcc \
   mingw-w64-ucrt-x86_64-gtk4 \
   mingw-w64-ucrt-x86_64-json-glib \
+  mingw-w64-ucrt-x86_64-gtksourceview5 \
   mingw-w64-ucrt-x86_64-cmake \
   mingw-w64-ucrt-x86_64-ninja \
   mingw-w64-ucrt-x86_64-pkgconf \
@@ -89,6 +90,12 @@ bash scripts/build-windows.sh
 ```sh
 ctest --test-dir build/windows -R '^gui$' --output-on-failure
 ```
+
+GtkSourceView поставляется вместе с ZIP: его DLL, языковые данные и общий
+Gtk runtime входят в пакет. Тема редактора встроена в EXE и извлекается в
+пользовательский cache для совместимости с GtkSourceView 5.4–5.14;
+при переносе ZIP не требуется переносить cache. Smoke-test проверяет
+наличие пяти языков и темы, включая запуск без MSYS2 в PATH.
 
 После распаковки переносимой сборки в PowerShell:
 

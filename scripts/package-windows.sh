@@ -42,6 +42,7 @@ for ((index=0; index<${#queue[@]}; index++)); do
 done
 
 mkdir -p "$package/share/glib-2.0" "$package/share/icons" "$package/etc"
+cp -R "$prefix/share/gtksourceview-5" "$package/share/"
 cp -R "$prefix/share/glib-2.0/schemas" "$package/share/glib-2.0/"
 glib-compile-schemas "$package/share/glib-2.0/schemas"
 for theme in Adwaita hicolor; do

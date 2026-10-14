@@ -4,6 +4,7 @@
 #include "graph.h"
 #include "theme.h"
 #include <glib/gstdio.h>
+#include <math.h>
 
 typedef enum { ACTION_NONE, ACTION_FILE, ACTION_LOCATION, ACTION_PROJECT, ACTION_CLOSE, ACTION_RELOAD } Action;
 
@@ -16,7 +17,9 @@ typedef struct {
     GtkSingleSelection *selection;
     GtkSearchEntry *search;
     GtkDropDown *configuration_picker, *target_picker;
-    GtkToggleButton *target_mode;
+    GtkToggleButton *target_mode, *overview, *groups;
+    GtkStack *sidebar_pages;
+    GtkLabel *build_chain, *build_profile;
     GtkLabel *build_name;
     GtkWidget *metadata_button;
     char *build_directory, *configuration;
@@ -32,7 +35,6 @@ typedef struct {
     Action pending;
     char *pending_path;
     guint pending_line;
-    guint highlight_source;
     gboolean smoke;
     guint smoke_stage;
     gboolean smoke_link_pending;
@@ -89,6 +91,8 @@ static void update_document_title(App *app)
 static void update_details(App *app)
 {
     if (!app->project) return;
+    g_autofree char *passport = project_build_summary(app->project, app->selected_target);
+    gtk_label_set_text(app->build_profile, passport);
     if (gtk_toggle_button_get_active(app->target_mode)) {
         GString *details = g_string_new("<b>CMake · граф целей сборки</b>\n");
         if (app->selected_target >= 0 && (guint)app->selected_target < app->project->targets->len) {
@@ -152,43 +156,6 @@ static void update_details(App *app)
     g_string_free(details, TRUE);
 }
 
-static gboolean highlight(gpointer user_data)
-{
-    App *app = user_data;
-    app->highlight_source = 0;
-    GtkTextIter start, end;
-    gtk_text_buffer_get_bounds(app->buffer, &start, &end);
-    gtk_text_buffer_remove_all_tags(app->buffer, &start, &end);
-    if (!app->document) return G_SOURCE_REMOVE;
-    g_autofree char *text = gtk_text_buffer_get_text(app->buffer, &start, &end, FALSE);
-    struct { const char *pattern, *tag; } patterns[] = {
-        {"\\b(int|char|void|float|double|long|short|unsigned|signed|const|static|"
-         "struct|typedef|enum|union|return|if|else|for|while|switch|case|break|sizeof|"
-         "NULL|gboolean|guint|gint)\\b", "keyword"},
-        {"(?m)^\\s*#.*$", "directive"},
-        {"\"(?:\\\\.|[^\"\\\\])*\"", "string"},
-        {"(?m)//[^\\n]*|(?s:/\\*.*?\\*/)", "comment"}
-    };
-    if (!g_str_has_suffix(app->document->path, ".c") &&
-        !g_str_has_suffix(app->document->path, ".h")) return G_SOURCE_REMOVE;
-    for (guint i = 0; i < G_N_ELEMENTS(patterns); i++) {
-        g_autoptr(GRegex) regex = g_regex_new(patterns[i].pattern, G_REGEX_OPTIMIZE, 0, NULL);
-        g_autoptr(GMatchInfo) matches = NULL;
-        g_regex_match(regex, text, 0, &matches);
-        while (g_match_info_matches(matches)) {
-            gint begin, finish;
-            g_match_info_fetch_pos(matches, 0, &begin, &finish);
-            gtk_text_buffer_get_iter_at_offset(app->buffer, &start,
-                (gint)g_utf8_pointer_to_offset(text, text + begin));
-            gtk_text_buffer_get_iter_at_offset(app->buffer, &end,
-                (gint)g_utf8_pointer_to_offset(text, text + finish));
-            gtk_text_buffer_apply_tag_by_name(app->buffer, patterns[i].tag, &start, &end);
-            g_match_info_next(matches, NULL);
-        }
-    }
-    return G_SOURCE_REMOVE;
-}
-
 static void buffer_changed(GtkTextBuffer *buffer, gpointer user_data)
 {
     App *app = user_data;
@@ -197,8 +164,6 @@ static void buffer_changed(GtkTextBuffer *buffer, gpointer user_data)
     GtkTextMark *insert = gtk_text_buffer_get_insert(buffer);
     gtk_text_buffer_get_iter_at_mark(buffer, &cursor, insert);
     cursor_moved(buffer, &cursor, insert, app);
-    if (app->highlight_source) g_source_remove(app->highlight_source);
-    app->highlight_source = g_timeout_add(180, highlight, app);
 }
 
 static void cursor_moved(GtkTextBuffer *buffer, const GtkTextIter *location,
@@ -225,6 +190,7 @@ static gboolean open_file(App *app, const char *relative)
     select_current_file(app);
     /* Reset undo history when switching files. */
     gtk_text_buffer_set_enable_undo(app->buffer, FALSE);
+    editor_set_language(app->editor, document->path);
     gtk_text_buffer_set_text(app->buffer, document->text, -1);
     gtk_text_buffer_set_enable_undo(app->buffer, TRUE);
     gtk_text_buffer_set_modified(app->buffer, FALSE);
@@ -465,6 +431,12 @@ static void scan_done(GObject *source, GAsyncResult *result, gpointer user_data)
     gtk_label_set_text(app->project_name, name);
     gtk_widget_set_tooltip_text(GTK_WIDGET(app->project_name), project->root);
     gtk_label_set_text(app->summary, summary);
+    const char *compiler = app->project->compilers->len ?
+        ((ProjectCompiler *)g_ptr_array_index(app->project->compilers, 0))->id : NULL;
+    g_autofree char *chain = project->generator ? g_strdup_printf("CMake → %s → %s\n%s", project->generator,
+        compiler ? compiler : "компилятор неизвестен", project->configuration && *project->configuration ? project->configuration : "без конфигурации") :
+        g_strdup("Сборка ещё не определена");
+    gtk_label_set_text(app->build_chain, chain);
     gtk_label_set_text(app->build_name, project->build_directory ? project->build_directory : "Метаданные не найдены");
     gtk_widget_set_tooltip_text(GTK_WIDGET(app->build_name), project->build_directory);
     app->updating_metadata = TRUE;
@@ -497,6 +469,11 @@ static void scan_done(GObject *source, GAsyncResult *result, gpointer user_data)
     populate_tree(app);
     gint selected = app->selected ? project_find_file(project, app->selected) : -1;
     graph_set_project(app->graph, project, selected);
+    if (request->replace) {
+        guint sources = 0;
+        for (guint i = 0; i < project->files->len; i++) sources += ((ProjectFile *)g_ptr_array_index(project->files, i))->source;
+        gtk_toggle_button_set_active(app->groups, sources > 30 || project->targets->len > 30);
+    }
     update_details(app);
     update_document_title(app);
     status(app, "Карта обновлена · скрипты проекта не запускались");
@@ -752,6 +729,15 @@ static void overview_toggled(GtkToggleButton *button, gpointer data)
     graph_set_overview(app->graph, gtk_toggle_button_get_active(button));
 }
 
+static void groups_toggled(GtkToggleButton *button, gpointer data)
+{ App *app = data; graph_set_grouped(app->graph, gtk_toggle_button_get_active(button)); }
+static void graph_zoom_in(GtkButton *button, gpointer data)
+{ (void)button; graph_zoom_by(((App *)data)->graph, 1.25); }
+static void graph_zoom_out(GtkButton *button, gpointer data)
+{ (void)button; graph_zoom_by(((App *)data)->graph, .8); }
+static void graph_fit_clicked(GtkButton *button, gpointer data)
+{ (void)button; graph_fit(((App *)data)->graph); }
+
 static gboolean close_requested(GtkWindow *window, gpointer user_data)
 {
     (void)window;
@@ -773,6 +759,7 @@ static gboolean key_pressed(GtkEventControllerKey *controller, guint keyval,
     App *app = data;
     if (!(modifiers & GDK_CONTROL_MASK)) return FALSE;
     if (keyval == GDK_KEY_p || keyval == GDK_KEY_P) {
+        gtk_stack_set_visible_child_name(app->sidebar_pages, "files");
         gtk_widget_grab_focus(GTK_WIDGET(app->search));
         gtk_editable_select_region(GTK_EDITABLE(app->search), 0, -1);
         return TRUE;
@@ -890,11 +877,13 @@ static gboolean smoke_write_metadata(App *app)
     const char *names[] = {"CMakeLists.txt", "build/compile_commands.json",
         "build/.cmake/api/v1/reply/index-2026.json", "build/.cmake/api/v1/reply/model.json",
         "build/.cmake/api/v1/reply/app-debug.json", "build/.cmake/api/v1/reply/app-release.json",
-        "build/.cmake/api/v1/reply/core.json"};
+        "build/.cmake/api/v1/reply/core.json", "build/.cmake/api/v1/reply/toolchains.json", "CMakePresets.json"};
     const char *contents[] = {
         "project(smoke C)\nadd_library(core STATIC main.c)\nadd_executable(app main.c)\ntarget_link_libraries(app PRIVATE core)\n",
         "[{\"directory\":\"..\",\"file\":\"main.c\",\"arguments\":[\"cc\",\"-I.\"]}]",
-        "{\"objects\":[{\"kind\":\"codemodel\",\"version\":{\"major\":2},\"jsonFile\":\"model.json\"}]}",
+        "{\"cmake\":{\"version\":{\"string\":\"3.31.6\"},\"generator\":{\"name\":\"Ninja Multi-Config\",\"multiConfig\":true}},"
+        "\"objects\":[{\"kind\":\"codemodel\",\"version\":{\"major\":2},\"jsonFile\":\"model.json\"},"
+        "{\"kind\":\"toolchains\",\"version\":{\"major\":1},\"jsonFile\":\"toolchains.json\"}]}",
         "{\"paths\":{\"source\":\"..\"},\"configurations\":["
         "{\"name\":\"Debug\",\"targets\":[{\"jsonFile\":\"app-debug.json\"},{\"jsonFile\":\"core.json\"}]},"
         "{\"name\":\"Release\",\"targets\":[{\"jsonFile\":\"app-release.json\"},{\"jsonFile\":\"core.json\"}]}]}",
@@ -906,7 +895,10 @@ static gboolean smoke_write_metadata(App *app)
         "\"artifacts\":[{\"path\":\"Release/app.exe\"}],"
         "\"backtraceGraph\":{\"files\":[\"CMakeLists.txt\"],\"nodes\":[{\"file\":0,\"line\":3},{\"file\":0,\"line\":4}]},"
         "\"dependencies\":[{\"id\":\"core\",\"backtrace\":1}]}",
-        "{\"id\":\"core\",\"name\":\"core\",\"type\":\"STATIC_LIBRARY\"}"
+        "{\"id\":\"core\",\"name\":\"core\",\"type\":\"STATIC_LIBRARY\"}",
+        "{\"toolchains\":[{\"language\":\"C\",\"compiler\":{\"id\":\"GNU\",\"version\":\"14.2\",\"path\":\"gcc\"}}]}",
+        "{\"version\":3,\"configurePresets\":[{\"name\":\"debug\",\"generator\":\"Ninja\",\"binaryDir\":\"${sourceDir}/build\","
+        "\"cacheVariables\":{\"CMAKE_BUILD_TYPE\":\"Debug\"}}]}"
     };
     for (guint i = 0; i < G_N_ELEMENTS(names); i++) {
         g_autofree char *path = g_build_filename(app->smoke_root, names[i], NULL);
@@ -930,6 +922,30 @@ static void smoke_remove_tree(const char *path)
     } else g_unlink(path);
 }
 
+static gboolean smoke_editor_checks(App *app)
+{
+    GtkSourceStyleScheme *scheme = gtk_source_buffer_get_style_scheme(GTK_SOURCE_BUFFER(app->buffer));
+    if (!scheme || g_strcmp0(gtk_source_style_scheme_get_id(scheme), "startapp-dark")) return FALSE;
+    GtkSourceLanguageManager *manager = gtk_source_language_manager_get_default();
+    const char *ids[] = {"c", "cpp", "cmake", "makefile", "json"};
+    for (guint i = 0; i < G_N_ELEMENTS(ids); i++)
+        if (!gtk_source_language_manager_get_language(manager, ids[i])) return FALSE;
+    g_autoptr(GtkSourceBuffer) buffer = gtk_source_buffer_new_with_language(gtk_source_language_manager_get_language(manager, "c"));
+    const char *text = "/* return\nint fake; */\nconst char *s = \"/* not a comment */\";\n";
+    gtk_text_buffer_set_text(GTK_TEXT_BUFFER(buffer), text, -1);
+    GtkTextIter start, end, iter;
+    gtk_text_buffer_get_bounds(GTK_TEXT_BUFFER(buffer), &start, &end); gtk_source_buffer_ensure_highlight(buffer, &start, &end);
+    gtk_text_buffer_get_iter_at_line(GTK_TEXT_BUFFER(buffer), &iter, 1);
+    if (!gtk_source_buffer_iter_has_context_class(buffer, &iter, "comment")) return FALSE;
+    gtk_text_buffer_get_iter_at_offset(GTK_TEXT_BUFFER(buffer), &iter, (gint)(strstr(text, "not a comment") - text));
+    if (!gtk_source_buffer_iter_has_context_class(buffer, &iter, "string") ||
+        gtk_source_buffer_iter_has_context_class(buffer, &iter, "comment")) return FALSE;
+    gtk_text_buffer_set_text(GTK_TEXT_BUFFER(buffer), "/* open comment\nint fake;\n", -1);
+    gtk_text_buffer_get_bounds(GTK_TEXT_BUFFER(buffer), &start, &end); gtk_source_buffer_ensure_highlight(buffer, &start, &end);
+    gtk_text_buffer_get_iter_at_line(GTK_TEXT_BUFFER(buffer), &iter, 1);
+    return gtk_source_buffer_iter_has_context_class(buffer, &iter, "comment");
+}
+
 static gboolean smoke_tick(gpointer data)
 {
     App *app = data;
@@ -944,7 +960,7 @@ static gboolean smoke_tick(gpointer data)
     }
     if (app->smoke_stage == 0) {
         request_action(app, ACTION_FILE, "main.c");
-        if (!app->document) goto failed;
+        if (!app->document || !smoke_editor_checks(app)) goto failed;
         app->smoke_stage++;
         return G_SOURCE_CONTINUE;
     }
@@ -1145,6 +1161,8 @@ static gboolean smoke_tick(gpointer data)
         return G_SOURCE_CONTINUE;
     }
     if (app->smoke_stage == 20) {
+        GtkSourceLanguage *language = gtk_source_buffer_get_language(GTK_SOURCE_BUFFER(app->buffer));
+        if (!language || g_strcmp0(gtk_source_language_get_id(language), "cmake")) goto failed;
         GtkTextIter cursor;
         gtk_text_buffer_get_iter_at_mark(app->buffer, &cursor, gtk_text_buffer_get_insert(app->buffer));
         if (g_strcmp0(app->selected, "CMakeLists.txt") || gtk_text_iter_get_line(&cursor) != 3) goto failed;
@@ -1156,12 +1174,52 @@ static gboolean smoke_tick(gpointer data)
         if (g_strcmp0(app->project->configuration, "Release") || app->project->targets->len != 2 ||
             app->project->target_edges->len != 1 || g_strcmp0(app->selected, "CMakeLists.txt")) goto failed;
         ProjectTarget *target = g_ptr_array_index(app->project->targets, 0);
-        if (!target->artifact || !strstr(target->artifact, "Release")) goto failed;
+        if (!target->artifact || !strstr(target->artifact, "Release") ||
+            !strstr(gtk_label_get_text(app->build_chain), "Ninja Multi-Config") ||
+            !strstr(gtk_label_get_text(app->build_profile), "14.2") || app->project->presets->len != 1) goto failed;
         gtk_drop_down_set_selected(app->target_picker, 1);
         if (!gtk_window_get_decorated(app->window) || gtk_window_get_titlebar(app->window)) goto failed;
         gtk_window_set_default_size(app->window, 1080, 720);
         app->smoke_stage++;
         return G_SOURCE_CONTINUE;
+    }
+    if (app->smoke_stage == 22) {
+        double x, y, after_x, after_y;
+        if (!graph_node_center(app->graph, 0, &x, &y)) goto failed;
+        double previous = graph_get_zoom(app->graph);
+        graph_zoom_at(app->graph, 1.25, x, y);
+        if (graph_get_zoom(app->graph) <= previous || !graph_node_center(app->graph, 0, &after_x, &after_y) ||
+            fabs(after_x - x) > .01 || fabs(after_y - y) > .01) goto failed;
+        graph_pan(app->graph, 12, 15);
+        if (!graph_node_center(app->graph, 0, &after_x, &after_y) || fabs(after_x - x - 12) > .01 ||
+            fabs(after_y - y - 15) > .01 || !graph_activate_at(app->graph, after_x, after_y)) goto failed;
+        gtk_toggle_button_set_active(app->overview, TRUE);
+        gtk_toggle_button_set_active(app->groups, TRUE);
+        gtk_stack_set_visible_child_name(app->sidebar_pages, "build");
+        app->smoke_stage++; return G_SOURCE_CONTINUE;
+    }
+    if (app->smoke_stage == 23) {
+        if (graph_visible_count(app->graph) != 2) goto failed;
+        /* Switch to files: the root group includes main.c/api.h/extra.h. */
+        gtk_toggle_button_set_active(app->target_mode, FALSE);
+        if (graph_visible_count(app->graph) != 2) goto failed;
+        graph_fit(app->graph);
+        app->smoke_stage++; return G_SOURCE_CONTINUE;
+    }
+    if (app->smoke_stage == 24) {
+        /* Expand the single root group through the actual click controller. */
+        guint before = graph_visible_count(app->graph);
+        gboolean expanded = FALSE;
+        int w = gtk_widget_get_width(graph_widget(app->graph)), h = gtk_widget_get_height(graph_widget(app->graph));
+        for (int y = 64; y < h && !expanded; y += 8) for (int x = 8; x < w && !expanded; x += 8)
+            if (graph_activate_at(app->graph, x, y)) expanded = TRUE;
+        if (!expanded || graph_visible_count(app->graph) <= before) goto failed;
+        gtk_toggle_button_set_active(app->groups, FALSE);
+        gtk_toggle_button_set_active(app->overview, FALSE);
+        gtk_toggle_button_set_active(app->target_mode, TRUE);
+        gtk_drop_down_set_selected(app->target_picker, 1);
+        graph_fit(app->graph);
+        app->smoke_stage++; return G_SOURCE_CONTINUE;
     }
     if (!take_screenshot(app)) goto failed;
     GtkWidget *controls[] = {app->scan_button, app->save_button, GTK_WIDGET(app->target_mode), GTK_WIDGET(app->position)};
@@ -1171,7 +1229,7 @@ static gboolean smoke_tick(gpointer data)
             bounds.origin.x < 0 || bounds.origin.x + bounds.size.width > gtk_widget_get_width(GTK_WIDGET(app->window)) + 1)
             goto failed;
     }
-    g_print("UI smoke PASS: editing, navigation, metadata import, target graph, Debug/Release, native decorations, resized layout\n");
+    g_print("UI smoke PASS: syntax and multiline contexts, editing, navigation, build passport, Debug/Release, layered graph, zoom/pan/groups, native decorations\n");
     app->closing = TRUE;
     gtk_window_destroy(app->window);
     return G_SOURCE_REMOVE;
@@ -1247,27 +1305,46 @@ static void activate(GtkApplication *application, gpointer data)
     gtk_label_set_wrap(app->summary, TRUE);
     gtk_label_set_max_width_chars(app->summary, 28);
     gtk_box_append(GTK_BOX(sidebar), GTK_WIDGET(app->summary));
+    app->build_chain = GTK_LABEL(label_new("Сборка ещё не определена", "muted"));
+    gtk_label_set_wrap(app->build_chain, TRUE);
+    gtk_label_set_max_width_chars(app->build_chain, 28);
+    gtk_box_append(GTK_BOX(sidebar), GTK_WIDGET(app->build_chain));
+    app->sidebar_pages = GTK_STACK(gtk_stack_new());
+    gtk_widget_set_vexpand(GTK_WIDGET(app->sidebar_pages), TRUE);
+    GtkWidget *switcher = gtk_stack_switcher_new();
+    gtk_stack_switcher_set_stack(GTK_STACK_SWITCHER(switcher), app->sidebar_pages);
+    gtk_box_append(GTK_BOX(sidebar), switcher);
+    gtk_box_append(GTK_BOX(sidebar), GTK_WIDGET(app->sidebar_pages));
+    GtkWidget *file_panel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    GtkWidget *build_panel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    gtk_stack_add_titled(app->sidebar_pages, file_panel, "files", "Файлы");
+    gtk_stack_add_titled(app->sidebar_pages, build_panel, "build", "Сборка");
     app->metadata_button = button_new("Каталог сборки…", G_CALLBACK(choose_metadata), app);
     gtk_widget_set_sensitive(app->metadata_button, FALSE);
-    gtk_box_append(GTK_BOX(sidebar), app->metadata_button);
+    gtk_box_append(GTK_BOX(build_panel), app->metadata_button);
     app->build_name = GTK_LABEL(label_new("Автопоиск метаданных", "muted"));
     gtk_label_set_ellipsize(app->build_name, PANGO_ELLIPSIZE_MIDDLE);
-    gtk_box_append(GTK_BOX(sidebar), GTK_WIDGET(app->build_name));
+    gtk_box_append(GTK_BOX(build_panel), GTK_WIDGET(app->build_name));
     const char *default_config[] = {"Без конфигурации", NULL};
     app->configuration_picker = GTK_DROP_DOWN(gtk_drop_down_new_from_strings(default_config));
     gtk_widget_set_sensitive(GTK_WIDGET(app->configuration_picker), FALSE);
     g_signal_connect(app->configuration_picker, "notify::selected", G_CALLBACK(configuration_changed), app);
-    gtk_box_append(GTK_BOX(sidebar), GTK_WIDGET(app->configuration_picker));
-    gtk_box_append(GTK_BOX(sidebar), label_new("ФАЙЛЫ", "section"));
+    gtk_box_append(GTK_BOX(build_panel), GTK_WIDGET(app->configuration_picker));
+    app->build_profile = GTK_LABEL(label_new("Откройте проект для просмотра параметров сборки.", "muted"));
+    gtk_label_set_wrap(app->build_profile, TRUE);
+    gtk_label_set_wrap_mode(app->build_profile, PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_max_width_chars(app->build_profile, 28);
+    gtk_label_set_selectable(app->build_profile, TRUE);
+    gtk_box_append(GTK_BOX(build_panel), scroll(GTK_WIDGET(app->build_profile)));
     app->search = GTK_SEARCH_ENTRY(gtk_search_entry_new());
     gtk_search_entry_set_placeholder_text(app->search, "Поиск файлов · Ctrl+P");
     gtk_search_entry_set_search_delay(app->search, 150);
     g_signal_connect(app->search, "search-changed", G_CALLBACK(search_changed), app);
     g_signal_connect(app->search, "stop-search", G_CALLBACK(search_stopped), app);
     g_signal_connect(app->search, "activate", G_CALLBACK(search_activate), app);
-    gtk_box_append(GTK_BOX(sidebar), GTK_WIDGET(app->search));
+    gtk_box_append(GTK_BOX(file_panel), GTK_WIDGET(app->search));
     app->search_result = GTK_LABEL(label_new("", "muted"));
-    gtk_box_append(GTK_BOX(sidebar), GTK_WIDGET(app->search_result));
+    gtk_box_append(GTK_BOX(file_panel), GTK_WIDGET(app->search_result));
     app->selection = gtk_single_selection_new(NULL);
     gtk_single_selection_set_autoselect(app->selection, FALSE);
     gtk_single_selection_set_can_unselect(app->selection, TRUE);
@@ -1278,7 +1355,7 @@ static void activate(GtkApplication *application, gpointer data)
     app->files = GTK_LIST_VIEW(gtk_list_view_new(GTK_SELECTION_MODEL(app->selection), factory));
     gtk_list_view_set_single_click_activate(app->files, TRUE);
     g_signal_connect(app->files, "activate", G_CALLBACK(tree_activate), app);
-    gtk_box_append(GTK_BOX(sidebar), scroll(GTK_WIDGET(app->files)));
+    gtk_box_append(GTK_BOX(file_panel), scroll(GTK_WIDGET(app->files)));
     gtk_paned_set_start_child(GTK_PANED(outer), sidebar);
     gtk_paned_set_resize_start_child(GTK_PANED(outer), FALSE);
     gtk_paned_set_shrink_start_child(GTK_PANED(outer), FALSE);
@@ -1298,7 +1375,7 @@ static void activate(GtkApplication *application, gpointer data)
     gtk_box_append(GTK_BOX(editor_toolbar), app->reload_button);
     gtk_box_append(GTK_BOX(editor_toolbar), app->save_button);
     gtk_box_append(GTK_BOX(editor_box), editor_toolbar);
-    app->editor = GTK_TEXT_VIEW(gtk_text_view_new());
+    app->editor = editor_new();
     gtk_text_view_set_monospace(app->editor, TRUE);
     gtk_text_view_set_editable(app->editor, FALSE);
     gtk_text_view_set_left_margin(app->editor, 16);
@@ -1306,10 +1383,6 @@ static void activate(GtkApplication *application, gpointer data)
     gtk_text_view_set_top_margin(app->editor, 16);
     app->buffer = gtk_text_view_get_buffer(app->editor);
     gtk_text_buffer_set_enable_undo(app->buffer, TRUE);
-    gtk_text_buffer_create_tag(app->buffer, "keyword", "foreground", theme_hex(THEME_ACCENT), NULL);
-    gtk_text_buffer_create_tag(app->buffer, "directive", "foreground", "#edbd99", NULL);
-    gtk_text_buffer_create_tag(app->buffer, "string", "foreground", "#d8c5a6", NULL);
-    gtk_text_buffer_create_tag(app->buffer, "comment", "foreground", theme_hex(THEME_MUTED), NULL);
     g_signal_connect(app->buffer, "changed", G_CALLBACK(buffer_changed), app);
     g_signal_connect(app->buffer, "modified-changed", G_CALLBACK(buffer_changed), app);
     g_signal_connect(app->buffer, "mark-set", G_CALLBACK(cursor_moved), app);
@@ -1338,9 +1411,9 @@ static void activate(GtkApplication *application, gpointer data)
     g_signal_connect(app->target_picker, "notify::selected", G_CALLBACK(target_changed), app);
     app->target_mode = GTK_TOGGLE_BUTTON(gtk_toggle_button_new_with_label("Цели"));
     gtk_box_append(GTK_BOX(graph_toolbar), GTK_WIDGET(app->target_mode));
-    GtkWidget *overview = gtk_toggle_button_new_with_label("Весь проект");
-    g_signal_connect(overview, "toggled", G_CALLBACK(overview_toggled), app);
-    gtk_box_append(GTK_BOX(graph_toolbar), overview);
+    app->overview = GTK_TOGGLE_BUTTON(gtk_toggle_button_new_with_label("Весь проект"));
+    g_signal_connect(app->overview, "toggled", G_CALLBACK(overview_toggled), app);
+    gtk_box_append(GTK_BOX(graph_toolbar), GTK_WIDGET(app->overview));
     gtk_box_append(GTK_BOX(graph_box), graph_toolbar);
     GtkWidget *target_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_widget_add_css_class(target_row, "toolbar");
@@ -1350,7 +1423,21 @@ static void activate(GtkApplication *application, gpointer data)
     gtk_box_append(GTK_BOX(graph_box), target_row);
     app->graph = graph_new(graph_open, graph_target_selected, app);
     g_signal_connect(app->target_mode, "toggled", G_CALLBACK(target_mode_toggled), app);
-    gtk_box_append(GTK_BOX(graph_box), scroll(graph_widget(app->graph)));
+    GtkWidget *view_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_add_css_class(view_row, "toolbar");
+    GtkWidget *zoom_out = button_new("−", G_CALLBACK(graph_zoom_out), app);
+    GtkWidget *zoom_in = button_new("+", G_CALLBACK(graph_zoom_in), app);
+    gtk_widget_set_tooltip_text(zoom_out, "Уменьшить масштаб карты");
+    gtk_widget_set_tooltip_text(zoom_in, "Увеличить масштаб карты");
+    gtk_box_append(GTK_BOX(view_row), zoom_out);
+    gtk_box_append(GTK_BOX(view_row), zoom_in);
+    gtk_box_append(GTK_BOX(view_row), button_new("Вписать", G_CALLBACK(graph_fit_clicked), app));
+    app->groups = GTK_TOGGLE_BUTTON(gtk_toggle_button_new_with_label("Группы"));
+    g_signal_connect(app->groups, "toggled", G_CALLBACK(groups_toggled), app);
+    gtk_widget_set_tooltip_text(GTK_WIDGET(app->groups), "В обзоре: свернуть каталоги или типы целей. Нажмите на группу для раскрытия, ПКМ — для сворачивания.");
+    gtk_box_append(GTK_BOX(view_row), GTK_WIDGET(app->groups));
+    gtk_box_append(GTK_BOX(graph_box), view_row);
+    gtk_box_append(GTK_BOX(graph_box), graph_widget(app->graph));
     app->details = GTK_LABEL(label_new("Нажмите на узел, чтобы открыть файл.\nСтрелка: исходник → включаемый заголовок.", "details"));
     gtk_label_set_wrap(app->details, TRUE);
     gtk_label_set_max_width_chars(app->details, 46);
@@ -1411,7 +1498,6 @@ int app_run(const char *project_path, const char *build_directory, const char *c
     app.application = gtk_application_new("io.github.PaperGooseRus.StartApp", G_APPLICATION_NON_UNIQUE);
     g_signal_connect(app.application, "activate", G_CALLBACK(activate), &app);
     int result = g_application_run(G_APPLICATION(app.application), 0, NULL);
-    if (app.highlight_source) g_source_remove(app.highlight_source);
     g_object_unref(app.application);
     document_free(app.document);
     project_free(app.project);

@@ -1,7 +1,10 @@
 #ifndef STARTAPP_EDITOR_H
 #define STARTAPP_EDITOR_H
 
-#include <gtk/gtk.h>
+#include <gtksourceview/gtksource.h>
+
+GtkTextView *editor_new(void);
+void editor_set_language(GtkTextView *view, const char *filename);
 
 void editor_attach_gutter(GtkTextView *view, GtkScrolledWindow *scroll);
 gboolean editor_go_to_line(GtkTextView *view, guint line);

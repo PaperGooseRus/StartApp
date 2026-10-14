@@ -22,8 +22,27 @@ static gint64 number_member(JsonObject *object, const char *name, gint64 fallbac
     return node && JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_INT64 ?
         json_node_get_int(node) : fallback;
 }
+static gboolean boolean_member(JsonObject *object, const char *name)
+{
+    JsonNode *node = member(object, name);
+    return node && JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_BOOLEAN && json_node_get_boolean(node);
+}
 static JsonObject *element(JsonArray *array, guint index)
 { return array && index < json_array_get_length(array) ? object_node(json_array_get_element(array, index)) : NULL; }
+
+void build_metadata_compiler_free(gpointer data)
+{
+    ProjectCompiler *compiler = data;
+    g_free(compiler->language); g_free(compiler->id); g_free(compiler->version);
+    g_free(compiler->path); g_free(compiler->source); g_free(compiler);
+}
+void build_metadata_preset_free(gpointer data)
+{
+    ProjectPreset *preset = data;
+    g_free(preset->name); g_free(preset->display_name); g_free(preset->kind); g_free(preset->generator);
+    g_free(preset->binary_directory); g_free(preset->configuration); g_free(preset->configure_preset);
+    g_free(preset->source); g_free(preset);
+}
 
 static void note(Project *project, const char *path, const char *message)
 { g_ptr_array_add(project->notes, g_strdup_printf("%s: %s", path, message)); }
@@ -139,6 +158,7 @@ static void import_commands(Project *project, const char *path)
     g_autofree char *parent = g_path_get_dirname(path);
     g_autoptr(GHashTable) imported = g_hash_table_new(g_direct_hash, g_direct_equal);
     guint length = json_array_get_length(entries);
+    gboolean command_compilers = project->compilers->len == 0;
     if (length > ENTRY_LIMIT) note(project, path, "compile command entry limit reached");
     for (guint i = 0; i < MIN(length, ENTRY_LIMIT); i++) {
         JsonObject *entry = element(entries, i);
@@ -188,6 +208,25 @@ static void import_commands(Project *project, const char *path)
             note(project, file->path, "multiple compile commands; first matching entry used"); continue;
         }
         g_hash_table_add(imported, GUINT_TO_POINTER((guint)index + 1));
+        if (command_compilers) {
+            const char *command = args[0];
+            g_autofree char *exe = g_path_get_basename(command);
+            if ((g_str_equal(exe, "ccache") || g_str_equal(exe, "sccache")) && args[1]) command = args[1];
+            g_autofree char *base_name = g_path_get_basename(command);
+            const char *language = g_str_has_suffix(file->path, ".cpp") || g_str_has_suffix(file->path, ".cc") ||
+                g_str_has_suffix(file->path, ".cxx") ? "CXX" : "C";
+            gboolean duplicate = FALSE;
+            for (guint k = 0; k < project->compilers->len; k++) {
+                ProjectCompiler *old = g_ptr_array_index(project->compilers, k);
+                if (g_strcmp0(old->path, command) == 0 && g_str_equal(old->language, language)) duplicate = TRUE;
+            }
+            if (!duplicate && project->compilers->len < 32) {
+                ProjectCompiler *compiler = g_new0(ProjectCompiler, 1);
+                compiler->language = g_strdup(language); compiler->path = g_strdup(command);
+                compiler->id = g_strdup(base_name); compiler->source = g_strdup("compile_commands.json (command name)");
+                g_ptr_array_add(project->compilers, compiler);
+            }
+        }
         ensure_settings(file, path, TRUE);
         for (guint j = 1; args[j]; j++) {
             const char *flag = args[j], *value = NULL;
@@ -260,6 +299,23 @@ static char *backtrace(Project *project, JsonObject *target, gint64 index,
     return g_strdup(file->path);
 }
 
+static void import_toolchains(Project *project, const char *reply, const char *filename)
+{
+    g_autoptr(JsonParser) parser = reply_json(project, reply, filename);
+    if (!parser) return;
+    JsonArray *toolchains = array_node(member(object_node(json_parser_get_root(parser)), "toolchains"));
+    for (guint i = 0; toolchains && i < MIN(32u, json_array_get_length(toolchains)); i++) {
+        JsonObject *toolchain = element(toolchains, i), *data = object_node(member(toolchain, "compiler"));
+        const char *language = string_member(toolchain, "language");
+        if (!language || !data) continue;
+        ProjectCompiler *compiler = g_new0(ProjectCompiler, 1);
+        compiler->language = g_strdup(language); compiler->id = g_strdup(string_member(data, "id"));
+        compiler->version = g_strdup(string_member(data, "version")); compiler->path = g_strdup(string_member(data, "path"));
+        compiler->source = g_strdup("CMake File API toolchains-v1");
+        g_ptr_array_add(project->compilers, compiler);
+    }
+}
+
 typedef struct { guint from; char *id, *definition; guint line; } PendingEdge;
 static void pending_free(gpointer data)
 {
@@ -282,10 +338,18 @@ static void import_cmake(Project *project, const char *directory, const char *co
     g_autoptr(JsonParser) index = reply_json(project, reply, latest);
     if (!index) return;
     JsonObject *root = object_node(json_parser_get_root(index));
+    JsonObject *cmake = object_node(member(root, "cmake"));
+    JsonObject *generator = object_node(member(cmake, "generator"));
+    project->generator = g_strdup(string_member(generator, "name"));
+    project->multi_config = boolean_member(generator, "multiConfig");
+    project->cmake_version = g_strdup(string_member(object_node(member(cmake, "version")), "string"));
     JsonArray *objects = array_node(member(root, "objects"));
     const char *codemodel_file = NULL;
     for (guint i = 0; objects && i < json_array_get_length(objects); i++) {
         JsonObject *object = element(objects, i);
+        if (g_strcmp0(string_member(object, "kind"), "toolchains") == 0 &&
+            number_member(object_node(member(object, "version")), "major", 0) == 1)
+            import_toolchains(project, reply, string_member(object, "jsonFile"));
         if (g_strcmp0(string_member(object, "kind"), "codemodel") == 0 &&
             number_member(object_node(member(object, "version")), "major", 0) == 2)
             codemodel_file = string_member(object, "jsonFile");
@@ -388,11 +452,151 @@ static gboolean has_metadata(const char *directory)
 {
     g_autofree char *commands = g_build_filename(directory, "compile_commands.json", NULL);
     g_autofree char *reply = g_build_filename(directory, ".cmake", "api", "v1", "reply", NULL);
-    return g_file_test(commands, G_FILE_TEST_IS_REGULAR) || g_file_test(reply, G_FILE_TEST_IS_DIR);
+    g_autofree char *cache = g_build_filename(directory, "CMakeCache.txt", NULL);
+    return g_file_test(commands, G_FILE_TEST_IS_REGULAR) || g_file_test(reply, G_FILE_TEST_IS_DIR) || g_file_test(cache, G_FILE_TEST_IS_REGULAR);
+}
+
+static void import_cache(Project *project)
+{
+    g_autofree char *path = g_build_filename(project->build_directory, "CMakeCache.txt", NULL);
+    g_autoptr(GFile) file = g_file_new_for_path(path);
+    g_autoptr(GFileInfo) info = g_file_query_info(file, G_FILE_ATTRIBUTE_STANDARD_TYPE "," G_FILE_ATTRIBUTE_STANDARD_SIZE,
+        G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, NULL, NULL);
+    if (!info) return;
+    if (g_file_info_get_file_type(info) != G_FILE_TYPE_REGULAR || g_file_info_get_size(info) > 2 * 1024 * 1024) {
+        note(project, path, "cache must be a regular UTF-8 file up to 2 MiB"); return;
+    }
+    g_autofree char *text = NULL; gsize length;
+    if (!g_file_load_contents(file, NULL, &text, &length, NULL, NULL) || length > 2 * 1024 * 1024 ||
+        memchr(text, 0, length) || !g_utf8_validate(text, (gssize)length, NULL)) { note(project, path, "invalid CMake cache"); return; }
+    g_auto(GStrv) lines = g_strsplit(text, "\n", -1);
+    gboolean compiler_fallback = project->compilers->len == 0;
+    for (guint i = 0; lines[i]; i++) {
+        char *colon = strchr(lines[i], ':'), *equal = colon ? strchr(colon, '=') : NULL;
+        if (!colon || !equal || lines[i][0] == '#' || lines[i][0] == '/') continue;
+        *colon = 0; char *value = g_strstrip(equal + 1);
+        if (!project->generator && g_str_equal(lines[i], "CMAKE_GENERATOR")) project->generator = g_strdup(value);
+        if (!project->configuration && g_str_equal(lines[i], "CMAKE_BUILD_TYPE")) project->configuration = g_strdup(value);
+        if (!project->configurations->len && g_str_equal(lines[i], "CMAKE_CONFIGURATION_TYPES") && *value) {
+            g_auto(GStrv) configs = g_strsplit(value, ";", -1);
+            for (guint j = 0; configs[j] && j < 32; j++) if (*configs[j]) g_ptr_array_add(project->configurations, g_strdup(configs[j]));
+            project->multi_config = TRUE;
+        }
+        if (compiler_fallback && project->compilers->len < 32 && (g_str_equal(lines[i], "CMAKE_C_COMPILER") || g_str_equal(lines[i], "CMAKE_CXX_COMPILER"))) {
+            ProjectCompiler *compiler = g_new0(ProjectCompiler, 1);
+            compiler->language = g_strdup(g_str_equal(lines[i], "CMAKE_C_COMPILER") ? "C" : "CXX");
+            compiler->path = g_strdup(value); compiler->source = g_strdup("CMakeCache.txt");
+            g_ptr_array_add(project->compilers, compiler);
+        }
+    }
+    if (!project->configurations->len && project->configuration) g_ptr_array_add(project->configurations, g_strdup(project->configuration));
+}
+
+typedef struct { JsonObject *data; char *kind, *source; } PresetSpec;
+static void spec_free(gpointer data)
+{
+    PresetSpec *spec = data; json_object_unref(spec->data); g_free(spec->kind); g_free(spec->source); g_free(spec);
+}
+static void collect_presets(Project *project, const char *path, GPtrArray *specs, GHashTable *visited, guint depth)
+{
+    if (g_hash_table_contains(visited, path)) return;
+    if (depth > 8 || g_hash_table_size(visited) >= 32) { note(project, path, "preset include limit reached"); return; }
+    g_hash_table_add(visited, g_strdup(path));
+    g_autoptr(JsonParser) parser = read_json(project, path); if (!parser) return;
+    JsonObject *root = object_node(json_parser_get_root(parser));
+    if (!root) { note(project, path, "preset root must be an object"); return; }
+    const char *keys[] = {"configurePresets", "buildPresets"};
+    for (guint k = 0; k < G_N_ELEMENTS(keys); k++) {
+        JsonArray *array = array_node(member(root, keys[k]));
+        for (guint i = 0; array && i < json_array_get_length(array) && specs->len < 1000; i++) {
+            JsonObject *data = element(array, i);
+            if (!string_member(data, "name")) { note(project, path, "preset lacks a string name"); continue; }
+            PresetSpec *spec = g_new0(PresetSpec, 1); spec->data = json_object_ref(data);
+            spec->kind = g_strdup(k ? "build" : "configure"); spec->source = g_strdup(path); g_ptr_array_add(specs, spec);
+        }
+    }
+    JsonArray *includes = array_node(member(root, "include"));
+    g_autofree char *parent = g_path_get_dirname(path);
+    for (guint i = 0; includes && i < MIN(32u, json_array_get_length(includes)); i++) {
+        const char *name = string_node(json_array_get_element(includes, i));
+        if (!name || strchr(name, '$')) { note(project, path, "preset include macros are not expanded"); continue; }
+        g_autofree char *absolute = g_canonicalize_filename(name, parent);
+        g_autoptr(GFile) root_file = g_file_new_for_path(project->root), child = g_file_new_for_path(absolute);
+        g_autofree char *relative = g_file_get_relative_path(root_file, child);
+        if (!relative) { note(project, path, "preset include outside project rejected"); continue; }
+        collect_presets(project, absolute, specs, visited, depth + 1);
+    }
+}
+static PresetSpec *preset_named(GPtrArray *specs, const char *kind, const char *name)
+{
+    for (guint i = 0; name && i < specs->len; i++) {
+        PresetSpec *spec = g_ptr_array_index(specs, i);
+        if (g_str_equal(spec->kind, kind) && g_str_equal(string_member(spec->data, "name"), name)) return spec;
+    }
+    return NULL;
+}
+static const char *resolve_preset(Project *project, GPtrArray *specs, PresetSpec *spec, const char *key,
+                                  GHashTable *visiting, guint *steps, guint depth)
+{
+    if (!spec) return NULL;
+    if (++*steps > 2000 || depth > 32 || g_hash_table_contains(visiting, spec)) {
+        if (*steps <= 2001) note(project, spec->source, "preset inheritance cycle or traversal limit");
+        return NULL;
+    }
+    const char *value;
+    if (g_str_equal(key, "CMAKE_BUILD_TYPE")) {
+        JsonNode *node = member(object_node(member(spec->data, "cacheVariables")), key);
+        value = string_node(node);
+        if (!value) value = string_member(object_node(node), "value");
+    } else value = string_member(spec->data, key);
+    if (value) return value;
+    g_hash_table_add(visiting, spec);
+    JsonNode *inherits = member(spec->data, "inherits");
+    const char *single = string_node(inherits);
+    if (single) value = resolve_preset(project, specs, preset_named(specs, spec->kind, single), key, visiting, steps, depth + 1);
+    JsonArray *parents = array_node(inherits);
+    for (guint i = 0; parents && i < MIN(32u, json_array_get_length(parents)); i++) {
+        const char *name = string_node(json_array_get_element(parents, i));
+        value = resolve_preset(project, specs, preset_named(specs, spec->kind, name), key, visiting, steps, depth + 1);
+        if (value || *steps > 2000) break;
+    }
+    g_hash_table_remove(visiting, spec);
+    return value;
+}
+static const char *preset_value(Project *project, GPtrArray *specs, PresetSpec *spec, const char *key, guint depth)
+{
+    g_autoptr(GHashTable) visiting = g_hash_table_new(g_direct_hash, g_direct_equal);
+    guint steps = 0;
+    return resolve_preset(project, specs, spec, key, visiting, &steps, depth);
+}
+static void import_presets(Project *project)
+{
+    g_autoptr(GPtrArray) specs = g_ptr_array_new_with_free_func(spec_free);
+    g_autoptr(GHashTable) visited = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    const char *files[] = {"CMakePresets.json", "CMakeUserPresets.json"};
+    for (guint i = 0; i < G_N_ELEMENTS(files); i++) {
+        g_autofree char *path = g_build_filename(project->root, files[i], NULL);
+        if (g_file_test(path, G_FILE_TEST_EXISTS)) collect_presets(project, path, specs, visited, 0);
+    }
+    for (guint i = 0; i < specs->len; i++) {
+        PresetSpec *spec = g_ptr_array_index(specs, i);
+        ProjectPreset *preset = g_new0(ProjectPreset, 1);
+        preset->name = g_strdup(string_member(spec->data, "name")); preset->kind = g_strdup(spec->kind);
+        preset->display_name = g_strdup(string_member(spec->data, "displayName"));
+        preset->hidden = boolean_member(spec->data, "hidden"); preset->source = g_strdup(spec->source);
+        preset->configure_preset = g_strdup(preset_value(project, specs, spec, "configurePreset", 0));
+        PresetSpec *configure = g_str_equal(spec->kind, "configure") ? spec : preset_named(specs, "configure", preset->configure_preset);
+        preset->generator = g_strdup(preset_value(project, specs, configure, "generator", 0));
+        preset->binary_directory = g_strdup(preset_value(project, specs, configure, "binaryDir", 0));
+        preset->configuration = g_strdup(g_str_equal(spec->kind, "build") ? preset_value(project, specs, spec, "configuration", 0) :
+            preset_value(project, specs, configure, "CMAKE_BUILD_TYPE", 0));
+        g_ptr_array_add(project->presets, preset);
+    }
 }
 
 void build_metadata_import(Project *project, const char *directory, const char *configuration)
 {
+    import_presets(project);
     if (directory) project->build_directory = g_canonicalize_filename(directory, project->root);
     else {
         const char *candidates[] = {"", "build", "build/windows", "build/linux", NULL};
@@ -407,6 +611,7 @@ void build_metadata_import(Project *project, const char *directory, const char *
     }
     import_cmake(project, project->build_directory, configuration);
     if (!project->configuration && configuration) project->configuration = g_strdup(configuration);
+    import_cache(project);
     g_autofree char *commands = g_build_filename(project->build_directory, "compile_commands.json", NULL);
     if (g_file_test(commands, G_FILE_TEST_IS_REGULAR)) import_commands(project, commands);
     for (guint i = 0; i < project->files->len; i++) {

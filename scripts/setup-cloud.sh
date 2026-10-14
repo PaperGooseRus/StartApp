@@ -36,7 +36,7 @@ APT_CONFIG="$STARTAPP_ENV_DIR/apt/apt.conf" /usr/bin/apt-get update
 # No dpkg installation occurs: only authenticated package downloads.
 APT_CONFIG="$STARTAPP_ENV_DIR/apt/apt.conf" /usr/bin/apt-get \
     -o Debug::NoLocking=true --download-only --reinstall -y --no-install-recommends install \
-    libgtk-4-dev libjson-glib-dev libjson-glib-1.0-0 xvfb xauth dbus-daemon cmake ninja-build \
+    libgtk-4-dev libjson-glib-dev libjson-glib-1.0-0 libgtksourceview-5-dev libgtksourceview-5-0 libgtksourceview-5-common xvfb xauth dbus-daemon cmake ninja-build \
     libpango-1.0-0 libpangocairo-1.0-0 libpangoft2-1.0-0 libharfbuzz0b \
     libgdk-pixbuf-2.0-0 libcairo2 libcairo-gobject2 libvulkan1 libglib2.0-0t64
 
@@ -50,6 +50,7 @@ export PKG_CONFIG_SYSROOT_DIR=$STARTAPP_ENV_DIR/root
 export LD_LIBRARY_PATH=$STARTAPP_ENV_DIR/root/usr/lib/$STARTAPP_MULTIARCH\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}
 export GSETTINGS_SCHEMA_DIR=$STARTAPP_ENV_DIR/root/usr/share/glib-2.0/schemas
 export XDG_CACHE_HOME=$STARTAPP_ENV_DIR/cache
+export XDG_DATA_DIRS=$STARTAPP_ENV_DIR/root/usr/share\${XDG_DATA_DIRS:+:\$XDG_DATA_DIRS}:/usr/local/share:/usr/share
 export PATH=$STARTAPP_ENV_DIR/root/usr/bin:\$PATH
 EOF
 . "$STARTAPP_ENV_DIR/activate.sh"

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(StartApp VERSION 0.3.0 LANGUAGES C)
+project(StartApp VERSION 0.4.0 LANGUAGES C)
 
 if(MSVC)
     message(FATAL_ERROR "Use the MSYS2 UCRT64 GCC toolchain on Windows; see docs/PLATFORMS.md")
@@ -12,24 +12,32 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL "Export compiler arguments for p
 # The integration test imports the actual build, not only hand-written JSON.
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/.cmake/api/v1/query")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/.cmake/api/v1/query/codemodel-v2" "")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/.cmake/api/v1/query/toolchains-v1" "")
 if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.27)
-    cmake_file_api(QUERY API_VERSION 1 CODEMODEL 2)
+    cmake_file_api(QUERY API_VERSION 1 CODEMODEL 2 TOOLCHAINS 1)
 endif()
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GTK4 REQUIRED IMPORTED_TARGET gtk4>=4.12)
 pkg_check_modules(GIO REQUIRED IMPORTED_TARGET gio-2.0>=2.68)
 pkg_check_modules(JSON_GLIB REQUIRED IMPORTED_TARGET json-glib-1.0>=1.6)
+pkg_check_modules(SOURCEVIEW REQUIRED IMPORTED_TARGET gtksourceview-5>=5.4)
+find_program(GLIB_COMPILE_RESOURCES glib-compile-resources REQUIRED)
+add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/startapp-resources.c"
+    COMMAND "${GLIB_COMPILE_RESOURCES}" --generate-source --c-name startapp_resources
+        --target "${CMAKE_CURRENT_BINARY_DIR}/startapp-resources.c"
+        --sourcedir "${CMAKE_CURRENT_SOURCE_DIR}/resources" "${CMAKE_CURRENT_SOURCE_DIR}/resources/startapp.gresource.xml"
+    DEPENDS resources/startapp.gresource.xml resources/styles/startapp-dark.xml)
 
 add_library(startapp_options INTERFACE)
 target_compile_options(startapp_options INTERFACE -Wall -Wextra -Wpedantic)
 if(STARTAPP_WARNINGS_AS_ERRORS)
     target_compile_options(startapp_options INTERFACE -Werror)
 endif()
-add_library(startapp_core STATIC src/project.c src/document.c src/build_metadata.c)
+add_library(startapp_core STATIC src/project.c src/document.c src/build_metadata.c src/graph_layout.c)
 target_include_directories(startapp_core PUBLIC src)
 target_link_libraries(startapp_core PUBLIC PkgConfig::GIO PkgConfig::JSON_GLIB startapp_options)
-add_library(startapp_ui STATIC src/app.c src/editor.c src/graph.c src/theme.c)
-target_link_libraries(startapp_ui PUBLIC startapp_core PkgConfig::GTK4)
+add_library(startapp_ui STATIC src/app.c src/editor.c src/graph.c src/theme.c "${CMAKE_CURRENT_BINARY_DIR}/startapp-resources.c")
+target_link_libraries(startapp_ui PUBLIC startapp_core PkgConfig::GTK4 PkgConfig::SOURCEVIEW)
 if(NOT WIN32)
     target_link_libraries(startapp_ui PUBLIC m)
 endif()

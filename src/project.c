@@ -60,6 +60,8 @@ void project_free(Project *project)
     g_ptr_array_unref(project->configurations);
     g_ptr_array_unref(project->targets);
     g_ptr_array_unref(project->target_edges);
+    g_free(project->cmake_version); g_free(project->generator);
+    g_ptr_array_unref(project->compilers); g_ptr_array_unref(project->presets);
     g_hash_table_unref(project->file_index);
     g_free(project);
 }
@@ -389,6 +391,8 @@ Project *project_scan_build(const char *directory, const char *build_directory,
     project->configurations = g_ptr_array_new_with_free_func(g_free);
     project->targets = g_ptr_array_new_with_free_func(build_metadata_target_free);
     project->target_edges = g_ptr_array_new_with_free_func(build_metadata_edge_free);
+    project->compilers = g_ptr_array_new_with_free_func(build_metadata_compiler_free);
+    project->presets = g_ptr_array_new_with_free_func(build_metadata_preset_free);
     if (!walk(project, "", 0, error)) {
         project_free(project);
         return NULL;
@@ -532,11 +536,93 @@ char *project_to_json(const Project *project)
         g_string_append(output, ",\"definition\":"); json_string(output, edge->definition);
         g_string_append_printf(output, ",\"line\":%u}", edge->line);
     }
-    g_string_append(output, "],\"notes\":[");
+    g_string_append(output, "],\"build_profile\":{\"cmake_version\":"); json_string(output, project->cmake_version);
+    g_string_append(output, ",\"generator\":"); json_string(output, project->generator);
+    g_string_append_printf(output, ",\"multi_config\":%s,\"compilers\":[", project->multi_config ? "true" : "false");
+    for (guint i = 0; i < project->compilers->len; i++) {
+        ProjectCompiler *compiler = g_ptr_array_index(project->compilers, i);
+        if (i) g_string_append_c(output, ',');
+        g_string_append(output, "{\"language\":"); json_string(output, compiler->language);
+        g_string_append(output, ",\"id\":"); json_string(output, compiler->id);
+        g_string_append(output, ",\"version\":"); json_string(output, compiler->version);
+        g_string_append(output, ",\"path\":"); json_string(output, compiler->path);
+        g_string_append(output, ",\"source\":"); json_string(output, compiler->source); g_string_append_c(output, '}');
+    }
+    g_string_append(output, "],\"presets\":[");
+    for (guint i = 0; i < project->presets->len; i++) {
+        ProjectPreset *preset = g_ptr_array_index(project->presets, i);
+        if (i) g_string_append_c(output, ',');
+        g_string_append(output, "{\"name\":"); json_string(output, preset->name);
+        g_string_append(output, ",\"display_name\":"); json_string(output, preset->display_name);
+        g_string_append(output, ",\"kind\":"); json_string(output, preset->kind);
+        g_string_append(output, ",\"generator\":"); json_string(output, preset->generator);
+        g_string_append(output, ",\"binary_directory\":"); json_string(output, preset->binary_directory);
+        g_string_append(output, ",\"configuration\":"); json_string(output, preset->configuration);
+        g_string_append(output, ",\"configure_preset\":"); json_string(output, preset->configure_preset);
+        g_string_append(output, ",\"source\":"); json_string(output, preset->source);
+        g_string_append_printf(output, ",\"hidden\":%s}", preset->hidden ? "true" : "false");
+    }
+    g_string_append(output, "]},\"notes\":[");
     for (guint i = 0; i < project->notes->len; i++) {
         if (i) g_string_append_c(output, ',');
         json_string(output, g_ptr_array_index(project->notes, i));
     }
     g_string_append_printf(output, "],\"skipped\":%u}\n", project->skipped);
     return g_string_free(output, FALSE);
+}
+
+char *project_build_summary(const Project *project, gint target_index)
+{
+    GString *text = g_string_new("Файлы инструментов в проекте:\n");
+    gboolean cmake = FALSE, make = FALSE, ninja = FALSE, meson = FALSE;
+    for (guint i = 0; i < project->files->len; i++) {
+        ProjectFile *file = g_ptr_array_index(project->files, i);
+        g_autofree char *name = g_path_get_basename(file->path);
+        cmake |= g_str_equal(name, "CMakeLists.txt") || g_str_has_suffix(name, ".cmake");
+        make |= g_ascii_strcasecmp(name, "Makefile") == 0 || g_str_equal(name, "GNUmakefile") || g_str_has_suffix(name, ".mk");
+        ninja |= g_str_equal(name, "build.ninja"); meson |= g_str_equal(name, "meson.build");
+    }
+    if (cmake) g_string_append(text, "• CMake\n");
+    if (make) g_string_append(text, "• Make\n");
+    if (ninja) g_string_append(text, "• Ninja\n");
+    if (meson) g_string_append(text, "• Meson\n");
+    if (!cmake && !make && !ninja && !meson) g_string_append(text, "Не найдены\n");
+    g_string_append_printf(text, "\nНастроенная сборка:\nГенератор: %s\nCMake: %s\nРежим: %s\nКаталог: %s\nКонфигурация: %s\n",
+        project->generator ? project->generator : "неизвестен", project->cmake_version ? project->cmake_version : "версия неизвестна",
+        project->generator ? project->multi_config ? "несколько конфигураций" : "одна конфигурация" : "неизвестен",
+        project->build_directory ? project->build_directory : "не выбран",
+        project->configuration && *project->configuration ? project->configuration : "не задана");
+    if (project->configurations->len) {
+        g_string_append(text, "Доступны: ");
+        for (guint i = 0; i < project->configurations->len; i++) {
+            if (i) g_string_append(text, ", ");
+            const char *name = g_ptr_array_index(project->configurations, i); g_string_append(text, *name ? name : "по умолчанию");
+        }
+        g_string_append_c(text, '\n');
+    }
+    g_string_append(text, "\nКомпиляторы:\n");
+    if (!project->compilers->len) g_string_append(text, "Неизвестны — запросите toolchains-v1\n");
+    for (guint i = 0; i < project->compilers->len; i++) {
+        ProjectCompiler *compiler = g_ptr_array_index(project->compilers, i);
+        g_string_append_printf(text, "%s: %s · %s\n%s\nИсточник: %s\n", compiler->language,
+            compiler->id ? compiler->id : "тип неизвестен", compiler->version ? compiler->version : "версия неизвестна",
+            compiler->path ? compiler->path : "путь неизвестен", compiler->source);
+    }
+    if (target_index >= 0 && (guint)target_index < project->targets->len) {
+        ProjectTarget *target = g_ptr_array_index(project->targets, (guint)target_index);
+        g_string_append_printf(text, "\nЦель: %s\nТип: %s\nРезультат: %s\n", target->name, target->type,
+            target->artifact ? target->artifact : "не указан");
+    }
+    g_string_append(text, "\nПресеты (объявления, не активная сборка):\n");
+    guint shown = 0;
+    for (guint i = 0; i < project->presets->len; i++) {
+        ProjectPreset *preset = g_ptr_array_index(project->presets, i); if (preset->hidden) continue;
+        if (++shown > 100) { g_string_append(text, "Остальные доступны в JSON\n"); break; }
+        g_string_append_printf(text, "%s [%s]\n%s · %s\nКаталог: %s\n", preset->name, preset->kind,
+            preset->generator ? preset->generator : "генератор не указан", preset->configuration ? preset->configuration : "конфигурация не указана",
+            preset->binary_directory ? preset->binary_directory : "не указан");
+    }
+    if (!shown) g_string_append(text, "Не найдены\n");
+    g_string_append(text, "\nМетаданные читаются с диска. Для обновления сначала повторите конфигурацию своего проекта.");
+    return g_string_free(text, FALSE);
 }

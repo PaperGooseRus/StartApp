@@ -1,5 +1,67 @@
 #include "editor.h"
 #include "theme.h"
+#include <glib/gstdio.h>
+#ifdef G_OS_WIN32
+#include <glib/gwin32.h>
+#endif
+
+GResource *startapp_resources_get_resource(void);
+
+GtkTextView *editor_new(void)
+{
+    /* Referencing the resource keeps it linked when the UI is a static library. */
+    (void)startapp_resources_get_resource();
+    GtkSourceLanguageManager *languages = gtk_source_language_manager_get_default();
+#ifdef G_OS_WIN32
+    g_autofree char *prefix = g_win32_get_package_installation_directory_of_module(NULL);
+    g_autofree char *specs = g_build_filename(prefix, "share", "gtksourceview-5", "language-specs", NULL);
+    if (g_file_test(specs, G_FILE_TEST_IS_DIR)) {
+        gtk_source_language_manager_prepend_search_path(languages, specs);
+    }
+#else
+    (void)languages;
+#endif
+    GtkSourceStyleSchemeManager *styles = gtk_source_style_scheme_manager_get_default();
+    /* Resource style paths require 5.16; extract our embedded scheme for 5.4+. */
+    g_autoptr(GBytes) bytes = g_resources_lookup_data("/io/github/PaperGooseRus/StartApp/styles/startapp-dark.xml",
+        G_RESOURCE_LOOKUP_FLAGS_NONE, NULL);
+    if (bytes) {
+        gsize length; const char *data = g_bytes_get_data(bytes, &length);
+        g_autofree char *digest = g_compute_checksum_for_data(G_CHECKSUM_SHA256, (const guchar *)data, length);
+        g_autofree char *directory = g_build_filename(g_get_user_cache_dir(), "startapp", "styles", digest, NULL);
+        g_autofree char *path = g_build_filename(directory, "startapp-dark.xml", NULL);
+        if (g_mkdir_with_parents(directory, 0700) == 0 && g_file_set_contents(path, data, (gssize)length, NULL))
+            gtk_source_style_scheme_manager_append_search_path(styles, directory);
+    }
+    GtkSourceBuffer *buffer = gtk_source_buffer_new(NULL);
+    gtk_source_buffer_set_style_scheme(buffer, gtk_source_style_scheme_manager_get_scheme(styles, "startapp-dark"));
+    gtk_source_buffer_set_highlight_matching_brackets(buffer, TRUE);
+    gtk_source_buffer_set_implicit_trailing_newline(buffer, FALSE);
+    GtkSourceView *view = GTK_SOURCE_VIEW(gtk_source_view_new_with_buffer(buffer));
+    g_object_unref(buffer);
+    gtk_source_view_set_auto_indent(view, TRUE);
+    gtk_source_view_set_tab_width(view, 4);
+    gtk_source_view_set_indent_width(view, 4);
+    gtk_source_view_set_insert_spaces_instead_of_tabs(view, TRUE);
+    gtk_source_view_set_highlight_current_line(view, TRUE);
+    gtk_source_view_set_smart_home_end(view, GTK_SOURCE_SMART_HOME_END_BEFORE);
+    return GTK_TEXT_VIEW(view);
+}
+
+void editor_set_language(GtkTextView *view, const char *filename)
+{
+    GtkSourceLanguageManager *manager = gtk_source_language_manager_get_default();
+    GtkSourceLanguage *language = filename ? gtk_source_language_manager_guess_language(manager, filename, NULL) : NULL;
+    g_autofree char *name = filename ? g_path_get_basename(filename) : NULL;
+    if (g_strcmp0(name, "CMakeLists.txt") == 0) language = gtk_source_language_manager_get_language(manager, "cmake");
+    if (name && (g_ascii_strcasecmp(name, "Makefile") == 0 || g_str_equal(name, "GNUmakefile")))
+        language = gtk_source_language_manager_get_language(manager, "makefile");
+    GtkSourceBuffer *buffer = GTK_SOURCE_BUFFER(gtk_text_view_get_buffer(view));
+    gtk_source_buffer_set_language(buffer, language);
+    /* Makefile recipes require real tabs. Other supported languages use spaces. */
+    gboolean makefile = language && g_str_equal(gtk_source_language_get_id(language), "makefile");
+    gtk_source_view_set_insert_spaces_instead_of_tabs(GTK_SOURCE_VIEW(view), !makefile);
+}
 
 typedef struct {
     GtkTextView *view; /* The text view owns the gutter and this context. */
