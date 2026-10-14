@@ -149,6 +149,30 @@ void graph_pan(Graph *graph, double dx, double dy)
 }
 double graph_get_zoom(Graph *graph) { return graph->zoom; }
 guint graph_visible_count(Graph *graph) { return graph->nodes->len; }
+void graph_get_transform(Graph *graph, double *zoom, double *x, double *y)
+{
+    if (graph->fit_pending) graph_fit(graph);
+    *zoom = graph->zoom; *x = graph->offset_x; *y = graph->offset_y;
+}
+void graph_restore_transform(Graph *graph, double zoom, double x, double y)
+{
+    if (!isfinite(zoom) || !isfinite(x) || !isfinite(y)) return;
+    graph->zoom = CLAMP(zoom, .03, 3); graph->offset_x = CLAMP(x, -100000, 100000); graph->offset_y = CLAMP(y, -100000, 100000);
+    graph->fit_pending = FALSE; gtk_widget_queue_draw(graph->area);
+}
+char **graph_get_expanded(Graph *graph)
+{
+    GPtrArray *groups = g_ptr_array_new_with_free_func(g_free); GHashTableIter iter; gpointer key;
+    g_hash_table_iter_init(&iter, graph->expanded);
+    while (g_hash_table_iter_next(&iter, &key, NULL)) g_ptr_array_add(groups, g_strdup(key));
+    g_ptr_array_add(groups, NULL); return (char **)g_ptr_array_free(groups, FALSE);
+}
+void graph_set_expanded(Graph *graph, const char *const *groups)
+{
+    g_hash_table_remove_all(graph->expanded);
+    for (guint i = 0; groups && groups[i] && i < 200; i++) if (strlen(groups[i]) <= 8192) g_hash_table_add(graph->expanded, g_strdup(groups[i]));
+    rebuild(graph);
+}
 
 static gint hit(Graph *graph, double x, double y)
 {
@@ -341,7 +365,7 @@ Graph *graph_new(GraphOpenFile open_file, GraphSelectTarget select_target, gpoin
     graph->nodes = g_ptr_array_new_with_free_func(node_free); graph->edges = g_array_new(FALSE, FALSE, sizeof(LayoutEdge));
     graph->expanded = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     graph->open_file = open_file; graph->select_target = select_target; graph->user_data = user_data; graph->area = gtk_drawing_area_new();
-    gtk_widget_set_size_request(graph->area, 240, 180); gtk_widget_set_hexpand(graph->area, TRUE); gtk_widget_set_vexpand(graph->area, TRUE);
+    gtk_widget_set_size_request(graph->area, 240, 120); gtk_widget_set_hexpand(graph->area, TRUE); gtk_widget_set_vexpand(graph->area, TRUE);
     gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(graph->area), draw, graph, NULL); g_signal_connect(graph->area, "resize", G_CALLBACK(resized), graph);
     GtkGesture *click = gtk_gesture_click_new(); gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), 0);
     g_signal_connect(click, "released", G_CALLBACK(released), graph); gtk_widget_add_controller(graph->area, GTK_EVENT_CONTROLLER(click));

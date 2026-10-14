@@ -2,6 +2,9 @@
 #include "project.h"
 #include "build_metadata.h"
 #include "graph_layout.h"
+#include "build.h"
+#include "session.h"
+#include <math.h>
 #include <json-glib/json-glib.h>
 #include <glib/gstdio.h>
 #include <string.h>
@@ -684,6 +687,72 @@ static void test_presets(void)
     project = scan(root); g_assert_cmpuint(project->notes->len, >, 0); project_free(project); remove_tree(root);
 }
 
+static void test_build_plan(void)
+{
+    g_autofree char *root = fixture(); cmake_fixture(root);
+    put(root, "build/CMakeCache.txt", "CMAKE_GENERATOR:INTERNAL=Ninja Multi-Config\n");
+    Project *project = scan_config(root, "Release");
+    g_autoptr(GError) error = NULL;
+    BuildPlan *plan = build_plan_new(project, 0, "C:/tools with spaces/cmake.exe", &error);
+    g_assert_no_error(error); g_assert_nonnull(plan);
+    g_assert_cmpstr(plan->argv[0], ==, "C:/tools with spaces/cmake.exe");
+    g_assert_cmpstr(plan->argv[1], ==, "--build"); g_assert_cmpstr(plan->argv[3], ==, "--config");
+    g_assert_cmpstr(plan->argv[4], ==, "Release"); g_assert_cmpstr(plan->argv[6], ==, "app");
+    build_plan_free(plan);
+    ProjectTarget *target = g_ptr_array_index(project->targets, 0);
+    g_free(target->name); target->name = g_strdup("--parallel");
+    plan = build_plan_new(project, 0, "cmake", &error);
+    g_assert_null(plan); g_assert_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT);
+    project_free(project); remove_tree(root);
+}
+static void test_diagnostics(void)
+{
+    g_autofree char *root = fixture(); put(root, "src/МОДУЛЬ.c", "int main(void) {}\n");
+    Project *project = scan(root); g_autofree char *build = g_build_filename(root, "build", NULL);
+    BuildDiagnostic *diagnostic = build_diagnostic_parse("\033[31m../src/МОДУЛЬ.c:1:4: error: missing token\033[0m", build, project);
+    g_assert_nonnull(diagnostic); g_assert_cmpstr(diagnostic->project_path, ==, "src/МОДУЛЬ.c");
+    g_assert_cmpuint(diagnostic->line, ==, 1); g_assert_cmpuint(diagnostic->column, ==, 4); g_assert_false(diagnostic->warning);
+    build_diagnostic_free(diagnostic);
+    diagnostic = build_diagnostic_parse("C:\\Projects with spaces\\main.c(101,3): warning C4100: unused", build, NULL);
+    g_assert_nonnull(diagnostic); g_assert_cmpstr(diagnostic->file, ==, "C:\\Projects with spaces\\main.c");
+    g_assert_cmpuint(diagnostic->column, ==, 3); g_assert_true(diagnostic->warning); build_diagnostic_free(diagnostic);
+    diagnostic = build_diagnostic_parse("src/МОДУЛЬ.c:1: warning: fallback root", build, project);
+    g_assert_cmpstr(diagnostic->project_path, ==, "src/МОДУЛЬ.c"); build_diagnostic_free(diagnostic);
+    g_assert_null(build_diagnostic_parse("[2/2] Linking", build, project));
+    g_assert_null(build_diagnostic_parse("main.c:4294967296: error: too large", build, project));
+    project_free(project); remove_tree(root);
+}
+static void test_session(void)
+{
+    g_autofree char *root = fixture(), *path = g_build_filename(root, "state", "workspace.ini", NULL);
+    SessionStore *store = session_store_new(path);
+    char *expanded[] = {"src", "include", NULL};
+    SessionState state = {.file = "src/МОДУЛЬ.c", .target = "core", .page = "build", .cmake = "C:/Tools/cmake.exe",
+        .line = 101, .column = 3, .width = 1080, .height = 720, .sidebar = 260, .editor = 470, .log = 520,
+        .target_mode = TRUE, .overview = TRUE, .groups = TRUE, .log_visible = TRUE, .zoom = .75,
+        .offset_x = 100.125, .offset_y = -50, .expanded = expanded, .configuration = "Release"};
+    g_autoptr(GError) error = NULL;
+    g_assert_true(session_save(store, root, &state, &error)); g_assert_no_error(error); session_store_free(store);
+    store = session_store_new(path); SessionState *loaded = session_load(store, root);
+    g_assert_nonnull(loaded); g_assert_cmpstr(loaded->file, ==, state.file); g_assert_cmpstr(loaded->target, ==, "core");
+    g_assert_cmpstr(loaded->cmake, ==, state.cmake); g_assert_cmpuint(loaded->line, ==, 101);
+    g_assert_cmpfloat(loaded->zoom, ==, .75); g_assert_cmpfloat(loaded->offset_x, ==, 100.125);
+    g_assert_true(loaded->overview); g_assert_cmpstr(loaded->expanded[1], ==, "include"); session_state_free(loaded);
+    state.width = 20; state.line = -1; state.zoom = NAN; state.offset_y = INFINITY;
+    g_assert_true(session_save(store, root, &state, &error)); loaded = session_load(store, root);
+    g_assert_cmpint(loaded->width, ==, 1420); g_assert_cmpint(loaded->line, ==, 1);
+    g_assert_cmpfloat(loaded->zoom, ==, 1); g_assert_cmpfloat(loaded->offset_y, ==, 0); session_state_free(loaded);
+    for (guint i = 0; i < 21; i++) {
+        g_autofree char *name = g_strdup_printf("проект %u", i), *project_root = g_build_filename(root, name, NULL);
+        g_assert_true(session_save(store, project_root, &state, &error));
+    }
+    g_auto(GStrv) recent = session_recent(store); g_assert_cmpuint(g_strv_length(recent), ==, 20);
+    g_assert_null(session_load(store, root));
+    g_assert_true(session_save(store, recent[0], &state, &error));
+    g_auto(GStrv) updated = session_recent(store); g_assert_cmpuint(g_strv_length(updated), ==, 20);
+    session_store_free(store); remove_tree(root);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -717,5 +786,8 @@ int main(int argc, char **argv)
     g_test_add_func("/metadata/build-profile", test_build_profile);
     g_test_add_func("/metadata/cache-profile", test_cache_profile);
     g_test_add_func("/metadata/presets-includes-inheritance-and-cycles", test_presets);
+    g_test_add_func("/build/plan-options-and-selected-target", test_build_plan);
+    g_test_add_func("/build/gcc-msvc-diagnostics-and-relative-paths", test_diagnostics);
+    g_test_add_func("/session/roundtrip-mru-and-invalid-values", test_session);
     return g_test_run();
 }

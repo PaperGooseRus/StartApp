@@ -18,6 +18,11 @@ fi
 # Resolve the complete PE import closure, including GTK's transitive DLLs.
 # All application DLLs come from this UCRT64 prefix, never another toolchain.
 queue=("$package/startapp.exe" "$package/startapp-cli.exe")
+for helper in gspawn-win64-helper.exe gspawn-win64-helper-console.exe; do
+    [[ -f $prefix/bin/$helper ]] || { printf '%s\n' "Missing GLib process helper: $helper" >&2; exit 1; }
+    cp "$prefix/bin/$helper" "$package/"
+    queue+=("$package/$helper")
+done
 shopt -s nullglob
 for module in "$package"/lib/gdk-pixbuf-2.0/*/loaders/*.dll; do queue+=("$module"); done
 declare -A copied

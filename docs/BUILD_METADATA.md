@@ -1,6 +1,6 @@
 # Метаданные сборки
 
-StartApp 0.4 читает `compile_commands.json` и CMake File API codemodel v2/toolchains v1.
+StartApp 0.5 читает `compile_commands.json` и CMake File API codemodel v2/toolchains v1.
 Он не запускает CMake, компилятор или команды из базы компиляции при открытии
 папки. Подготовьте метаданные своего проекта привычным способом, затем
 выберите каталог сборки в приложении.

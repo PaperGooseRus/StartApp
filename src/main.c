@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include "app.h"
 #include "project.h"
+#include "build_fixture.h"
 #ifdef G_OS_WIN32
 #include <glib/gwin32.h>
 #endif
@@ -37,6 +38,7 @@ int main(int argc, char **argv)
     argc = (int)g_strv_length(windows_args);
 #endif
     prepare_runtime();
+    if (argc == 3 && g_str_equal(argv[1], "--test-build-child")) return build_fixture_main(argv[0], argv[2]);
     const char *directory = NULL, *build_directory = NULL, *configuration = NULL;
     gboolean inspect = FALSE, smoke = FALSE;
     for (int i = 1; i < argc; i++) {
