@@ -58,6 +58,8 @@ for directory in "$package"/lib/gdk-pixbuf-2.0/*/loaders; do
 done
 cp README.md "$package/README.md"
 cp docs/PLATFORMS.md "$package/PLATFORMS.md"
+mkdir -p "$package/docs"
+cp docs/PLATFORMS.md docs/BUILD_METADATA.md "$package/docs/"
 mkdir -p "$package/licenses"
 for license in "$prefix"/share/licenses/*; do
     [[ ! -d $license ]] || cp -R "$license" "$package/licenses/"

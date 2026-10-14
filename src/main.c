@@ -37,16 +37,32 @@ int main(int argc, char **argv)
     argc = (int)g_strv_length(windows_args);
 #endif
     prepare_runtime();
-    if (argc == 2 && (g_str_equal(argv[1], "--help") || g_str_equal(argv[1], "-h"))) {
-        g_print("StartApp - C / GTK4 project map and editor\n"
-                "Usage: startapp [PROJECT_DIRECTORY]\n"
-                "       startapp --inspect PROJECT_DIRECTORY   (JSON, no display)\n"
-                "       startapp --smoke-test                 (temporary fixture)\n");
-        return 0;
+    const char *directory = NULL, *build_directory = NULL, *configuration = NULL;
+    gboolean inspect = FALSE, smoke = FALSE;
+    for (int i = 1; i < argc; i++) {
+        const char *arg = argv[i];
+        if (g_str_equal(arg, "--help") || g_str_equal(arg, "-h")) {
+            g_print("StartApp - C / GTK4 project map and editor\n"
+                "Usage: startapp [--inspect] [PROJECT_DIRECTORY] [--build-dir DIRECTORY] [--config NAME]\n"
+                "       startapp --smoke-test (temporary fixture)\n");
+            return 0;
+        }
+        if (g_str_equal(arg, "--inspect")) inspect = TRUE;
+        else if (g_str_equal(arg, "--smoke-test")) smoke = TRUE;
+        else if (g_str_equal(arg, "--build-dir") || g_str_equal(arg, "--config")) {
+            if (++i >= argc) { g_printerr("Missing option value. Use --help.\n"); return 2; }
+            if (g_str_equal(arg, "--build-dir")) build_directory = argv[i];
+            else configuration = argv[i];
+        } else if (arg[0] != '-' && !directory) directory = arg;
+        else { g_printerr("Invalid arguments. Use --help.\n"); return 2; }
     }
-    if (argc == 3 && g_str_equal(argv[1], "--inspect")) {
+    if ((inspect && !directory) || (smoke && (directory || build_directory || configuration || inspect)) ||
+        (!directory && (build_directory || configuration))) {
+        g_printerr("A project directory is required for build options or --inspect.\n"); return 2;
+    }
+    if (inspect) {
         g_autoptr(GError) error = NULL;
-        Project *project = project_scan(argv[2], &error);
+        Project *project = project_scan_build(directory, build_directory, configuration, &error);
         if (!project) { g_printerr("%s\n", error->message); return 1; }
         g_autofree char *json = project_to_json(project);
         /* JSON is UTF-8 regardless of the user's terminal locale. */
@@ -54,10 +70,5 @@ int main(int argc, char **argv)
         project_free(project);
         return 0;
     }
-    gboolean smoke = argc == 2 && g_str_equal(argv[1], "--smoke-test");
-    if (argc > 2 || (argc == 2 && argv[1][0] == '-' && !smoke)) {
-        g_printerr("Invalid arguments. Use --help.\n");
-        return 2;
-    }
-    return app_run(smoke || argc == 1 ? NULL : argv[1], smoke);
+    return app_run(directory, build_directory, configuration, smoke);
 }

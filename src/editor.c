@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "theme.h"
 
 typedef struct {
     GtkTextView *view; /* The text view owns the gutter and this context. */
@@ -19,9 +20,9 @@ static void draw_gutter(GtkDrawingArea *area, cairo_t *cr, int width, int height
     GdkRectangle visible;
     gtk_text_view_get_visible_rect(gutter->view, &visible);
     gtk_text_view_get_line_at_y(gutter->view, &line, visible.y, NULL);
-    cairo_set_source_rgb(cr, .065, .09, .13);
+    theme_cairo(cr, THEME_SURFACE, 1);
     cairo_paint(cr);
-    cairo_set_source_rgb(cr, .15, .21, .29);
+    theme_cairo(cr, THEME_BORDER, 1);
     cairo_rectangle(cr, width - 1, 0, 1, height);
     cairo_fill(cr);
 
@@ -38,7 +39,7 @@ static void draw_gutter(GtkDrawingArea *area, cairo_t *cr, int width, int height
             if (!gutter->first_drawn) gutter->first_drawn = (guint)number + 1;
             gutter->last_drawn = (guint)number + 1;
             if (number == selected) {
-                cairo_set_source_rgb(cr, .10, .20, .23);
+                theme_cairo(cr, THEME_SELECTION, 1);
                 cairo_rectangle(cr, 0, window_y, width - 1, line_height);
                 cairo_fill(cr);
             }
@@ -47,9 +48,7 @@ static void draw_gutter(GtkDrawingArea *area, cairo_t *cr, int width, int height
             pango_layout_set_text(label, text, -1);
             int text_width, text_height;
             pango_layout_get_pixel_size(label, &text_width, &text_height);
-            cairo_set_source_rgb(cr, number == selected ? .4 : .43,
-                                 number == selected ? .85 : .52,
-                                 number == selected ? .73 : .64);
+            theme_cairo(cr, number == selected ? THEME_ACCENT : THEME_MUTED, 1);
             cairo_move_to(cr, width - text_width - 10,
                           window_y + MAX(0, (line_height - text_height) / 2));
             pango_cairo_show_layout(cr, label);
