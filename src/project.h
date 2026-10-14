@@ -5,7 +5,7 @@
 
 /* Analysis is static: no compiler or project script is executed. */
 typedef struct {
-    char *path; /* Relative to Project.root. */
+    char *path; /* UTF-8 relative to Project.root, with '/' separators on all OSes. */
     gboolean source;
     gboolean build_file;
 } ProjectFile;

@@ -3,6 +3,9 @@
 typedef struct {
     GtkTextView *view; /* The text view owns the gutter and this context. */
     guint first_drawn, last_drawn;
+    guint scroll_tick;
+    guint scroll_frames;
+    guint requested_line;
 } Gutter;
 
 static void draw_gutter(GtkDrawingArea *area, cairo_t *cr, int width, int height,
@@ -103,6 +106,25 @@ void editor_attach_gutter(GtkTextView *view, GtkScrolledWindow *scroll)
     refresh_width(buffer, area);
 }
 
+static gboolean finish_scroll(GtkWidget *widget, GdkFrameClock *clock, gpointer data)
+{
+    (void)clock;
+    Gutter *gutter = data;
+    /* GTK 4.14 can finish paragraph layout after the initial scroll request. */
+    if (++gutter->scroll_frames < 3) return G_SOURCE_CONTINUE;
+    GtkTextView *view = GTK_TEXT_VIEW(widget);
+    GtkTextBuffer *buffer = gtk_text_view_get_buffer(view);
+    GtkTextIter cursor;
+    gtk_text_buffer_get_iter_at_mark(buffer, &cursor, gtk_text_buffer_get_insert(buffer));
+    if ((guint)gtk_text_iter_get_line(&cursor) + 1 == gutter->requested_line) {
+        gtk_text_view_scroll_to_mark(view, gtk_text_buffer_get_insert(buffer), .15, TRUE, 0, .3);
+        GtkWidget *area = gtk_text_view_get_gutter(view, GTK_TEXT_WINDOW_LEFT);
+        if (area) gtk_widget_queue_draw(area);
+    }
+    gutter->scroll_tick = 0;
+    return G_SOURCE_REMOVE;
+}
+
 gboolean editor_go_to_line(GtkTextView *view, guint line)
 {
     GtkTextBuffer *buffer = gtk_text_view_get_buffer(view);
@@ -114,6 +136,13 @@ gboolean editor_go_to_line(GtkTextView *view, guint line)
     gtk_text_buffer_select_range(buffer, &start, &end);
     gtk_text_view_scroll_to_mark(view, gtk_text_buffer_get_insert(buffer), .15, TRUE, 0, .3);
     gtk_widget_grab_focus(GTK_WIDGET(view));
+    Gutter *gutter = g_object_get_data(G_OBJECT(view), "startapp-gutter-context");
+    if (gutter) {
+        if (gutter->scroll_tick) gtk_widget_remove_tick_callback(GTK_WIDGET(view), gutter->scroll_tick);
+        gutter->requested_line = line;
+        gutter->scroll_frames = 0;
+        gutter->scroll_tick = gtk_widget_add_tick_callback(GTK_WIDGET(view), finish_scroll, gutter, NULL);
+    }
     return TRUE;
 }
 

@@ -1,0 +1,81 @@
+name: Linux and Windows
+on:
+  push:
+    branches: [main, 'feat/**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GTK4 and build tools
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev cmake ninja-build pkg-config xvfb xauth dbus-daemon
+      - name: Build and package
+        run: sh scripts/build-linux.sh
+      - name: Test GUI
+        run: xvfb-run -a -s '-screen 0 1600x1000x24' dbus-run-session -- bash scripts/ci-gui-test.sh build/linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StartApp-Linux-x64
+          path: build/linux/StartApp-*-Linux-*.tar.gz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Linux-test-results
+          path: |
+            build/linux/Testing/Temporary/LastTest.log
+            build/linux/smoke-ui.png
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-binutils
+      - name: Build, core tests and portable ZIP
+        run: bash scripts/build-windows.sh
+      - name: Test native GTK4 GUI
+        run: bash scripts/ci-gui-test.sh build/windows
+      - name: Test relocated portable ZIP without MSYS2 in PATH
+        shell: pwsh
+        run: |
+          Expand-Archive dist/StartApp-Windows-x64.zip -DestinationPath "$env:RUNNER_TEMP/StartApp test"
+          $app = "$env:RUNNER_TEMP/StartApp test/StartApp-Windows-x64"
+          $env:PATH = "$env:SystemRoot/System32;$env:SystemRoot"
+          Remove-Item Env:GSETTINGS_SCHEMA_DIR -ErrorAction SilentlyContinue
+          Remove-Item Env:XDG_DATA_DIRS -ErrorAction SilentlyContinue
+          Remove-Item Env:FONTCONFIG_FILE -ErrorAction SilentlyContinue
+          Remove-Item Env:GDK_PIXBUF_MODULE_FILE -ErrorAction SilentlyContinue
+          Remove-Item Env:GDK_PIXBUF_MODULEDIR -ErrorAction SilentlyContinue
+          $env:STARTAPP_SMOKE_SCREENSHOT = "$env:RUNNER_TEMP/portable-smoke.png"
+          $process = Start-Process "$app/startapp-cli.exe" -ArgumentList '--smoke-test' -WorkingDirectory $env:RUNNER_TEMP -PassThru
+          if (-not $process.WaitForExit(45000)) { $process.Kill(); throw 'Portable GUI timed out' }
+          if ($process.ExitCode -ne 0) { throw "Portable GUI failed: $($process.ExitCode)" }
+          $process = Start-Process "$app/startapp.exe" -ArgumentList '--smoke-test' -WorkingDirectory $env:RUNNER_TEMP -PassThru
+          if (-not $process.WaitForExit(45000)) { $process.Kill(); throw 'Desktop executable timed out' }
+          if ($process.ExitCode -ne 0) { throw "Desktop executable failed: $($process.ExitCode)" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StartApp-Windows-x64
+          path: dist/StartApp-Windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Windows-test-results
+          path: |
+            build/windows/Testing/Temporary/LastTest.log
+            build/windows/smoke-ui.png

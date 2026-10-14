@@ -36,7 +36,7 @@ APT_CONFIG="$STARTAPP_ENV_DIR/apt/apt.conf" /usr/bin/apt-get update
 # No dpkg installation occurs: only authenticated package downloads.
 APT_CONFIG="$STARTAPP_ENV_DIR/apt/apt.conf" /usr/bin/apt-get \
     -o Debug::NoLocking=true --download-only --reinstall -y --no-install-recommends install \
-    libgtk-4-dev xvfb xauth dbus-daemon \
+    libgtk-4-dev xvfb xauth dbus-daemon cmake ninja-build \
     libpango-1.0-0 libpangocairo-1.0-0 libpangoft2-1.0-0 libharfbuzz0b \
     libgdk-pixbuf-2.0-0 libcairo2 libcairo-gobject2 libvulkan1 libglib2.0-0t64
 
