@@ -104,6 +104,7 @@ static void stash_tab(App *app);
 static gboolean recovery_tick(gpointer data);
 static void setup_monitors(App *app);
 static void tools_clicked(GtkButton *button, gpointer data);
+static void tools_configured(const char *root, const char *directory, gpointer data);
 static void use_buffer(App *app, GtkTextBuffer *buffer);
 static void show_error(App *app, const char *title, const char *message);
 
@@ -1708,14 +1709,15 @@ static gboolean smoke_tick(gpointer data)
         if (result) app->smoke_stage++;
         return G_SOURCE_CONTINUE;
     }
-    if (app->smoke_stage == 44) { tools_ui_free(app->tools); app->tools = NULL; }
-    if (app->smoke_stage >= 44 && app->smoke_stage <= 47) {
-        gint result = language_ui_smoke_step(app->language, app->smoke_stage-44);
+    if (app->smoke_stage == 44) { tools_ui_free(app->tools); app->tools = NULL; tools_configured(app->project->root, app->project->build_directory, app); app->smoke_stage++; return G_SOURCE_CONTINUE; }
+    if (app->smoke_stage >= 45 && app->smoke_stage <= 48) {
+        if (app->configuration || g_strcmp0(app->project->configuration, "Debug")) goto failed;
+        gint result = language_ui_smoke_step(app->language, app->smoke_stage-45);
         if (result < 0) goto failed;
         if (result) app->smoke_stage++;
         return G_SOURCE_CONTINUE;
     }
-    if (app->smoke_stage == 48) { gtk_text_buffer_set_text(app->buffer, app->document->text, -1); gtk_text_buffer_set_modified(app->buffer, FALSE); editor_go_to_line(app->editor, 101); app->smoke_stage++; return G_SOURCE_CONTINUE; }
+    if (app->smoke_stage == 49) { gtk_text_buffer_set_text(app->buffer, app->document->text, -1); gtk_text_buffer_set_modified(app->buffer, FALSE); editor_go_to_line(app->editor, 101); app->smoke_stage++; return G_SOURCE_CONTINUE; }
     if (!take_screenshot(app)) goto failed;
     GtkWidget *controls[] = {app->scan_button, app->save_button, GTK_WIDGET(app->target_mode), GTK_WIDGET(app->position)};
     for (guint i = 0; i < G_N_ELEMENTS(controls); i++) {
@@ -1840,7 +1842,9 @@ static void tools_configured(const char *root, const char *directory, gpointer d
 {
     App *app = data;
     if (!app->project || g_strcmp0(root, app->project->root)) return;
-    g_free(app->build_directory); app->build_directory = g_strdup(directory); scan_project(app, root, FALSE);
+    g_free(app->build_directory); app->build_directory = g_strdup(directory);
+    g_clear_pointer(&app->configuration, g_free);
+    scan_project(app, root, FALSE);
 }
 static void git_overlay(const char *root, GHashTable *paths, gpointer data)
 {

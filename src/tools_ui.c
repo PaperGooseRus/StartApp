@@ -182,6 +182,7 @@ static void process_done(gint code, gboolean stopped, gpointer data)
     t->collecting_git = FALSE;
     if (!code && !stopped && t->configuring) {
         g_free(t->project->build_directory); t->project->build_directory = g_strdup(t->pending_build);
+        g_clear_pointer(&t->project->configuration, g_free);
         begin(t, OP_SCAN);
     }
     t->configuring = FALSE; g_clear_pointer(&t->pending_build, g_free);
