@@ -1,5 +1,6 @@
 #include "language_ui.h"
 #include "language_client.h"
+#include <string.h>
 
 struct LanguageUI {
     gint refs;
@@ -14,7 +15,7 @@ struct LanguageUI {
     GtkTextTag *error_tag, *warning_tag;
     GtkPopover *completion;
     char *root, *build, *file, *snapshot;
-    guint epoch, timer;
+    guint epoch, timer, diagnostic_count, diagnostic_generation, smoke_generation;
     LanguageClient *client;
     LanguageNavigate navigate;
     LanguageStatus status;
@@ -43,6 +44,7 @@ static void diagnostic_tags(LanguageUI *u, JsonNode *result)
     gtk_text_buffer_remove_tag(b, u->error_tag, &a, &z); gtk_text_buffer_remove_tag(b, u->warning_tag, &a, &z);
     JsonNode *node = language_member(result, "diagnostics"); JsonArray *list = node && JSON_NODE_HOLDS_ARRAY(node) ? json_node_get_array(node) : NULL;
     GString *report = g_string_new(NULL); guint count = list ? json_array_get_length(list) : 0;
+    u->diagnostic_count = count; u->diagnostic_generation++;
     for (guint i = 0; i < MIN(count, 200u); i++) {
         JsonNode *d = json_array_get_element(list, i), *range = language_member(d, "range");
         if (!position(b, language_member(range, "start"), &a) || !position(b, language_member(range, "end"), &z) || gtk_text_iter_compare(&a, &z) > 0) continue;
@@ -92,6 +94,7 @@ static void completions(LanguageUI *u, JsonNode *result)
     GtkTextIter at; GtkTextBuffer *b = gtk_text_view_get_buffer(u->editor); gtk_text_buffer_get_iter_at_mark(b, &at, gtk_text_buffer_get_insert(b)); GdkRectangle rect;
     gtk_text_view_get_iter_location(u->editor, &at, &rect); gtk_text_view_buffer_to_window_coords(u->editor, GTK_TEXT_WINDOW_WIDGET, rect.x, rect.y, &rect.x, &rect.y);
     gtk_popover_set_pointing_to(u->completion, &rect); gtk_popover_popup(u->completion);
+    g_autofree char *message = g_strdup_printf("clangd · %u вариантов дополнения", shown); u->status(message, u->data);
 }
 static void response(GObject *source, GAsyncResult *result, gpointer data)
 {
@@ -110,7 +113,10 @@ static void response(GObject *source, GAsyncResult *result, gpointer data)
                 if (!uri) { uri = language_string(language_member(location, "targetUri")); range = language_member(location, "targetSelectionRange"); }
                 if (uri) {
                     g_autoptr(GFile) file = g_file_new_for_uri(uri), root = g_file_new_for_path(u->root); g_autofree char *path = g_file_get_relative_path(root, file);
-                    if (path) u->navigate(path, (guint)MAX(0, language_integer(language_member(language_member(range, "start"), "line"), 0))+1, u->data);
+                    if (path) {
+                        guint line = (guint)CLAMP(language_integer(language_member(language_member(range, "start"), "line"), 0), 0, G_MAXINT-1)+1;
+                        g_autofree char *message = g_strdup_printf("clangd · определение %s:%u", path, line); u->status(message, u->data); u->navigate(path, line, u->data);
+                    }
                     else u->status("Определение находится вне проекта", u->data);
                 } else u->status("clangd · определение не найдено", u->data);
             }
@@ -188,4 +194,45 @@ void language_ui_free(LanguageUI *u)
     if (u->completion) gtk_widget_unparent(GTK_WIDGET(u->completion));
     g_signal_handlers_disconnect_by_data(u->observed, u);
     language_client_stop(u->client); unref(u);
+}
+
+/* Called only by the owned GUI smoke fixture. Portable runs skip absent clangd. */
+gint language_ui_smoke_step(LanguageUI *u, guint step)
+{
+    g_autofree char *program = g_find_program_in_path("clangd");
+    if (!program) return 1;
+    GtkTextBuffer *b = gtk_text_view_get_buffer(u->editor);
+    if (step == 0) {
+        gtk_text_buffer_set_text(b, "int sample_function(void) { return 42; }\nint main(void) { return broken_token; }\n", -1);
+        u->smoke_generation = u->diagnostic_generation;
+        gtk_toggle_button_set_active(u->enabled, TRUE); language_ui_action(u, "diagnostics"); return 1;
+    }
+    if (u->busy) return 0;
+    if (step == 1) {
+        if (u->diagnostic_generation == u->smoke_generation) return -1;
+        if (!u->diagnostic_count) return -1;
+        gtk_text_buffer_set_text(b, "int sample_function(void) { return 42; }\nint main(void) { return sam }\n", -1);
+        GtkTextIter cursor; gtk_text_buffer_get_iter_at_line_offset(b, &cursor, 1, 27); gtk_text_buffer_place_cursor(b, &cursor);
+        language_ui_action(u, "textDocument/completion"); return 1;
+    }
+    if (step == 2) {
+        if (!u->completion) { g_printerr("clangd GUI: no completion popup\n"); return -1; }
+        GtkWidget *scroll = gtk_popover_get_child(u->completion), *box = gtk_scrolled_window_get_child(GTK_SCROLLED_WINDOW(scroll));
+        if (GTK_IS_VIEWPORT(box)) box = gtk_viewport_get_child(GTK_VIEWPORT(box));
+        GtkWidget *found = NULL;
+        for (GtkWidget *item = gtk_widget_get_first_child(box); item; item = gtk_widget_get_next_sibling(item)) {
+            if (GTK_IS_BUTTON(item) && strstr(gtk_button_get_label(GTK_BUTTON(item)), "sample_function")) { found = item; break; }
+        }
+        if (!found) { g_printerr("clangd GUI: function missing from completion list\n"); return -1; }
+        g_signal_emit_by_name(found, "clicked"); g_autofree char *text = buffer_text(u);
+        if (!strstr(text, "return sample_function")) { g_autofree char *item = json_to_string(g_object_get_data(G_OBJECT(found), "item"), FALSE); g_printerr("clangd GUI: text=%s item=%s\n", text, item); return -1; }
+        GtkTextIter cursor; gtk_text_buffer_get_iter_at_line_offset(b, &cursor, 1, 25); gtk_text_buffer_place_cursor(b, &cursor);
+        language_ui_action(u, "textDocument/definition"); return 1;
+    }
+    if (step == 3) {
+        GtkTextIter cursor; gtk_text_buffer_get_iter_at_mark(b, &cursor, gtk_text_buffer_get_insert(b));
+        if (gtk_text_iter_get_line(&cursor) != 0) return -1;
+        gtk_toggle_button_set_active(u->enabled, FALSE); return 1;
+    }
+    return -1;
 }

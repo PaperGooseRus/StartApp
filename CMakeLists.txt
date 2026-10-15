@@ -82,7 +82,7 @@ if(BUILD_TESTING)
         "-DTEST_EXE=$<TARGET_FILE:startapp-import-tests>" -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_import.cmake")
     set_tests_properties(metadata-self PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE)
     add_test(NAME gui COMMAND ${STARTAPP_TEST_EXECUTABLE} --smoke-test)
-    set_tests_properties(gui PROPERTIES TIMEOUT 45 WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    set_tests_properties(gui PROPERTIES TIMEOUT 75 WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         ENVIRONMENT "GTK_A11Y=none;GSETTINGS_BACKEND=memory;GSK_RENDERER=cairo;STARTAPP_SMOKE_SCREENSHOT=${CMAKE_CURRENT_BINARY_DIR}/smoke-ui.png")
 endif()
 

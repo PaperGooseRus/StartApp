@@ -52,9 +52,9 @@ static void test_incremental(void)
 }
 static void test_export_catalog(void)
 {
-    Project *p = fixture(); put("x<&.c", ""); Project *next = project_scan(root, NULL);
+    Project *p = fixture(); put("x&'.c", ""); Project *next = project_scan(root, NULL);
     g_autofree char *svg = workspace_export(next, FALSE, FALSE), *html = workspace_export(next, TRUE, FALSE);
-    g_assert_nonnull(strstr(svg, "xmlns=")); g_assert_nonnull(strstr(svg, "x&lt;&amp;.c")); g_assert_nonnull(strstr(html, "toLocaleLowerCase")); g_assert_null(strstr(html, "<title>x<&"));
+    g_assert_nonnull(strstr(svg, "xmlns=")); g_assert_nonnull(strstr(svg, "x&amp;&apos;.c")); g_assert_nonnull(strstr(html, "toLocaleLowerCase")); g_assert_null(strstr(html, "<title>x&'"));
     g_autofree char *path = g_build_filename(root, "build", "catalog.ini", NULL); g_autoptr(GError) error = NULL;
     g_autofree char *card = workspace_catalog(path, p, "main.c", &error); g_assert_no_error(error); g_assert_nonnull(strstr(card, "Последний файл: main.c"));
     g_autofree char *loaded = workspace_catalog(path, NULL, NULL, &error); g_assert_no_error(error); g_assert_nonnull(strstr(loaded, root));

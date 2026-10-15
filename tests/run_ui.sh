@@ -8,13 +8,13 @@ export GSETTINGS_BACKEND=memory
 export GSK_RENDERER=cairo
 
 if [ -n "${DISPLAY:-}" ]; then
-    timeout 30s dbus-run-session -- ./build/startapp --smoke-test
+    timeout 60s dbus-run-session -- ./build/startapp --smoke-test
 else
     command -v xvfb-run >/dev/null 2>&1 || {
         printf '%s\n' 'Install xvfb and xauth to run the GUI test without a display.' >&2
         exit 1
     }
     export GDK_BACKEND=x11
-    timeout 30s xvfb-run -a -s '-screen 0 1600x1000x24' \
+    timeout 60s xvfb-run -a -s '-screen 0 1600x1000x24' \
         dbus-run-session -- ./build/startapp --smoke-test
 fi

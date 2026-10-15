@@ -9,5 +9,6 @@ LanguageUI *language_ui_new(GtkApplication *application, GtkWindow *window, GtkT
 GtkWidget *language_ui_widget(LanguageUI *ui);
 void language_ui_context(LanguageUI *ui, const char *root, const char *build_directory, const char *relative_file);
 void language_ui_action(LanguageUI *ui, const char *method);
+gint language_ui_smoke_step(LanguageUI *ui, guint step);
 void language_ui_free(LanguageUI *ui);
 #endif

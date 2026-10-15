@@ -265,7 +265,13 @@ static void rules_file(GtkButton *b, gpointer data)
 static void system_changed(GObject *o, GParamSpec *s, gpointer data)
 {
     (void)o; (void)s; ToolsUI *t = data;
-    const char *system = picked(t->system); gtk_editable_set_text(GTK_EDITABLE(t->tool), g_str_equal(system, "CMake") ? "cmake" : g_str_equal(system, "Meson") ? "meson" : "make");
+    const char *system = picked(t->system);
+    const char *name = g_str_equal(system, "CMake") ? "cmake" : g_str_equal(system, "Meson") ? "meson" : "make";
+    g_autofree char *tool = g_find_program_in_path(name);
+#ifdef G_OS_WIN32
+    if (!tool && g_str_equal(name, "make")) tool = g_find_program_in_path("mingw32-make");
+#endif
+    gtk_editable_set_text(GTK_EDITABLE(t->tool), tool ? tool : name);
 }
 static void page_changed(GObject *o, GParamSpec *s, gpointer data)
 {

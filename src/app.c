@@ -1709,6 +1709,13 @@ static gboolean smoke_tick(gpointer data)
         return G_SOURCE_CONTINUE;
     }
     if (app->smoke_stage == 44) { tools_ui_free(app->tools); app->tools = NULL; }
+    if (app->smoke_stage >= 44 && app->smoke_stage <= 47) {
+        gint result = language_ui_smoke_step(app->language, app->smoke_stage-44);
+        if (result < 0) goto failed;
+        if (result) app->smoke_stage++;
+        return G_SOURCE_CONTINUE;
+    }
+    if (app->smoke_stage == 48) { gtk_text_buffer_set_text(app->buffer, app->document->text, -1); gtk_text_buffer_set_modified(app->buffer, FALSE); editor_go_to_line(app->editor, 101); app->smoke_stage++; return G_SOURCE_CONTINUE; }
     if (!take_screenshot(app)) goto failed;
     GtkWidget *controls[] = {app->scan_button, app->save_button, GTK_WIDGET(app->target_mode), GTK_WIDGET(app->position)};
     for (guint i = 0; i < G_N_ELEMENTS(controls); i++) {
@@ -1718,12 +1725,12 @@ static gboolean smoke_tick(gpointer data)
             goto failed;
     }
     save_session(app);
-    g_print("UI smoke PASS: editor/graph, build save dialog, streamed failure and navigation, success/rescan, cancellation, session restore, pinned tabs/undo, graph filters, search/impact/rules/compare/environment/export/catalog\n");
+    g_print("UI smoke PASS: editor/graph, build save dialog, streamed failure and navigation, success/rescan, cancellation, session restore, pinned tabs/undo, graph filters, search/impact/rules/compare/environment/export/catalog, optional clangd diagnostics/completion/definition\n");
     app->closing = TRUE;
     gtk_window_destroy(app->window);
     return G_SOURCE_REMOVE;
 failed:
-    g_printerr("UI smoke FAIL at stage %u\n", app->smoke_stage);
+    g_printerr("UI smoke FAIL at stage %u: %s\n", app->smoke_stage, gtk_label_get_text(app->status));
     {
         GtkTextIter cursor;
         guint first = 0, last = 0;
