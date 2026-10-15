@@ -10,7 +10,7 @@ APP = $(CORE) build/app.o build/editor.o build/graph.o build/theme.o build/build
 .DELETE_ON_ERROR:
 
 .PHONY: all run test test-ui clean check-deps
-all: build/startapp
+all: build/sourceatlas
 
 check-deps:
 	@$(PKG_CONFIG) --atleast-version=4.12 gtk4 || { printf '%s\n' 'GTK4 >= 4.12 development files are required.' >&2; exit 1; }
@@ -23,10 +23,10 @@ build:
 build/%.o: src/%.c Makefile | build check-deps
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
-build/startapp: $(APP) Makefile
+build/sourceatlas: $(APP) Makefile
 	$(CC) $(LDFLAGS) $(APP) $(LDLIBS) -o $@
 
-build/startapp-resources.c: resources/startapp.gresource.xml resources/styles/startapp-dark.xml | build
+build/startapp-resources.c: resources/startapp.gresource.xml resources/styles/startapp-dark.xml packaging/io.github.PaperGooseRus.StartApp.svg | build
 	glib-compile-resources --generate-source --c-name startapp_resources --target $@ --sourcedir resources $<
 
 build/startapp-resources.o: build/startapp-resources.c
@@ -44,8 +44,8 @@ build/test-tools: tests/test_tools.c $(CORE) Makefile
 build/test-workflows: tests/test_workflows.c $(CORE) Makefile
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_workflows.c $(CORE) $(LDLIBS) -o $@
 
-run: build/startapp
-	./build/startapp .
+run: build/sourceatlas
+	./build/sourceatlas .
 
 test: build/test-core build/test-build build/test-tools build/test-workflows
 	./build/test-core
@@ -53,7 +53,7 @@ test: build/test-core build/test-build build/test-tools build/test-workflows
 	./build/test-tools
 	./build/test-workflows
 
-test-ui: build/startapp
+test-ui: build/sourceatlas
 	sh tests/run_ui.sh
 
 clean:

@@ -13,7 +13,7 @@ typedef struct {
 struct Graph {
     GtkWidget *area;
     const Project *project;
-    gint selected, selected_target, hovered;
+    gint selected, selected_target, hovered, selected_edge;
     gboolean target_mode, overview, grouped, fit_pending, drag_moved;
     GPtrArray *nodes;
     GArray *edges, *origins;
@@ -54,7 +54,7 @@ static void rebuild(Graph *graph)
 {
     g_ptr_array_set_size(graph->nodes, 0); g_array_set_size(graph->edges, 0); g_array_set_size(graph->origins, 0);
     graph_layout_free(graph->layout); graph->layout = NULL;
-    graph->hovered = -1; graph->omitted = 0; graph->fit_pending = TRUE;
+    graph->hovered = graph->selected_edge = -1; graph->omitted = 0; graph->fit_pending = TRUE;
     if (!graph->project) { gtk_widget_queue_draw(graph->area); return; }
     guint count = graph->target_mode ? graph->project->targets->len : graph->project->files->len;
     guint edges = graph->target_mode ? graph->project->target_edges->len : graph->project->edges->len;
@@ -120,6 +120,11 @@ static void rebuild(Graph *graph)
         LayoutEdge edge = {(guint)map[from], (guint)map[to]}; g_array_append_val(graph->edges, edge); g_array_append_val(graph->origins, i);
     }
     graph->layout = graph_layout_build(graph->nodes->len, graph->edges);
+    if (graph->grouped) {
+        g_autofree const char **names = g_new(const char *, graph->nodes->len);
+        for (guint i = 0; i < graph->nodes->len; i++) names[i] = ((Node *)g_ptr_array_index(graph->nodes, i))->group;
+        graph_layout_group(graph->layout, names);
+    }
     gtk_widget_queue_draw(graph->area);
 }
 
@@ -206,6 +211,7 @@ gboolean graph_activate_at(Graph *graph, double x, double y)
 {
     gint found = hit(graph, x, y);
     if (found < 0) return FALSE;
+    graph->selected_edge = -1; gtk_widget_queue_draw(graph->area);
     Node *node = g_ptr_array_index(graph->nodes, (guint)found);
     if (node->id < 0) { g_hash_table_add(graph->expanded, g_strdup(node->group)); rebuild(graph); }
     else if (graph->target_mode) graph->select_target((guint)node->id, graph->user_data);
@@ -213,18 +219,21 @@ gboolean graph_activate_at(Graph *graph, double x, double y)
     return TRUE;
 }
 
-static void text(cairo_t *cr, const char *value, double x, double y, double width,
-                 int size, gboolean bold, ThemeColor color)
+static void text_font(cairo_t *cr, const char *value, double x, double y, double width,
+                      int size, gboolean bold, ThemeColor color, const char *family)
 {
     PangoLayout *label = pango_cairo_create_layout(cr);
     PangoFontDescription *font = pango_font_description_new();
-    pango_font_description_set_family(font, "Sans"); pango_font_description_set_size(font, size * PANGO_SCALE);
+    pango_font_description_set_family(font, family); pango_font_description_set_size(font, size * PANGO_SCALE);
     pango_font_description_set_weight(font, bold ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL);
     pango_layout_set_font_description(label, font); pango_layout_set_text(label, value, -1);
     pango_layout_set_width(label, (int)(MAX(1, width) * PANGO_SCALE)); pango_layout_set_ellipsize(label, PANGO_ELLIPSIZE_MIDDLE);
     theme_cairo(cr, color, 1); cairo_move_to(cr, x, y); pango_cairo_show_layout(cr, label);
     pango_font_description_free(font); g_object_unref(label);
 }
+static void text(cairo_t *cr, const char *value, double x, double y, double width,
+                 int size, gboolean bold, ThemeColor color)
+{ text_font(cr, value, x, y, width, size, bold, color, "Sans"); }
 static void rounded(cairo_t *cr, double x, double y, double w, double h)
 {
     const double r = 9;
@@ -234,6 +243,10 @@ static void rounded(cairo_t *cr, double x, double y, double w, double h)
 }
 static gboolean adjacent(Graph *graph, guint node, gint focus)
 {
+    if (graph->selected_edge >= 0) {
+        LayoutEdge edge = g_array_index(graph->edges, LayoutEdge, (guint)graph->selected_edge);
+        return edge.from == node || edge.to == node;
+    }
     if (focus < 0 || (gint)node == focus) return TRUE;
     for (guint i = 0; i < graph->edges->len; i++) {
         LayoutEdge e = g_array_index(graph->edges, LayoutEdge, i);
@@ -301,9 +314,27 @@ static void draw(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpoin
         if (((Node *)g_ptr_array_index(graph->nodes, i))->id == selected(graph)) { focus = (gint)i; break; }
     cairo_save(cr); cairo_rectangle(cr, 0, 52, width, MAX(0,height - 52)); cairo_clip(cr);
     cairo_translate(cr, graph->offset_x, graph->offset_y); cairo_scale(cr, graph->zoom, graph->zoom);
+    if (graph->grouped) for (guint i = 0; i < graph->nodes->len; i++) {
+        Node *node = g_ptr_array_index(graph->nodes, i);
+        gboolean first = TRUE;
+        double top = G_MAXDOUBLE, bottom = 0;
+        for (guint j = 0; j < graph->nodes->len; j++) {
+            Node *other = g_ptr_array_index(graph->nodes, j);
+            if (!g_str_equal(node->group, other->group)) continue;
+            if (j < i) first = FALSE;
+            LayoutNode position = g_array_index(graph->layout->nodes, LayoutNode, j);
+            top = MIN(top, position.y); bottom = MAX(bottom, position.y + 62);
+        }
+        if (!first) continue;
+        rounded(cr, 18, top - 35, graph->layout->width - 36, bottom - top + 53);
+        theme_cairo(cr, THEME_SURFACE, .45); cairo_fill_preserve(cr);
+        theme_cairo(cr, THEME_BORDER, .7); cairo_set_line_width(cr, 1); cairo_stroke(cr);
+        text(cr, g_str_equal(node->group, ".") ? "Корень проекта" : node->group,
+             36, top - 27, graph->layout->width - 72, 10, TRUE, THEME_MUTED);
+    }
     for (guint i = 0; i < graph->nodes->len; i++) {
         LayoutNode pos = g_array_index(graph->layout->nodes, LayoutNode, i);
-        if (!pos.cycle) continue;
+        if (!pos.cycle || graph->grouped) continue;
         gboolean first = TRUE; double top = pos.y, bottom = pos.y + 62;
         for (guint j = 0; j < graph->nodes->len; j++) {
             LayoutNode other = g_array_index(graph->layout->nodes, LayoutNode, j);
@@ -314,22 +345,26 @@ static void draw(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpoin
         if (!first) continue;
         rounded(cr, pos.x - 14, top - 14, 228, bottom - top + 28);
         double dash[] = {5,4}; cairo_set_dash(cr, dash, 2, 0);
-        theme_cairo(cr, THEME_ACCENT, .6); cairo_set_line_width(cr, 1); cairo_stroke(cr); cairo_set_dash(cr, NULL, 0, 0);
+        theme_cairo(cr, THEME_WARNING, .6); cairo_set_line_width(cr, 1); cairo_stroke(cr); cairo_set_dash(cr, NULL, 0, 0);
     }
     for (guint i = 0; i < graph->edges->len; i++) {
         LayoutEdge e = g_array_index(graph->edges, LayoutEdge, i);
-        gboolean active = focus >= 0 && ((gint)e.from == focus || (gint)e.to == focus);
-        theme_cairo(cr, active ? THEME_ACCENT : THEME_MUTED, active ? .95 : focus >= 0 ? .13 : .4);
+        gboolean active = graph->selected_edge >= 0 ? (gint)i == graph->selected_edge : focus >= 0 && ((gint)e.from == focus || (gint)e.to == focus);
+        theme_cairo(cr, active ? THEME_ACCENT : THEME_MUTED, active ? .95 : focus >= 0 || graph->selected_edge >= 0 ? .13 : .4);
         cairo_set_line_width(cr, active ? 2.2 : 1.2); cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+        guint origin = g_array_index(graph->origins, guint, i);
+        gboolean heuristic = !graph->target_mode && !((ProjectEdge *)g_ptr_array_index(graph->project->edges, origin))->metadata;
+        double dash[] = {6, 4}; if (heuristic) cairo_set_dash(cr, dash, 2, 0);
         double end_x, end_y; edge_path(graph, cr, i, &end_x, &end_y);
-        cairo_stroke(cr); cairo_move_to(cr, end_x, end_y);
+        cairo_stroke(cr); cairo_set_dash(cr, NULL, 0, 0); cairo_move_to(cr, end_x, end_y);
         if (e.from == e.to) { cairo_line_to(cr, end_x - 4, end_y - 6); cairo_line_to(cr, end_x + 4, end_y - 6); }
         else { cairo_line_to(cr, end_x - 6, end_y - 4); cairo_line_to(cr, end_x - 6, end_y + 4); }
         cairo_close_path(cr); cairo_fill(cr);
     }
     for (guint i = 0; i < graph->nodes->len; i++) {
         Node *node = g_ptr_array_index(graph->nodes, i); LayoutNode pos = g_array_index(graph->layout->nodes, LayoutNode, i);
-        gboolean active = node->id >= 0 && node->id == selected(graph), dim = !adjacent(graph, i, focus);
+        gboolean active = graph->selected_edge >= 0 ? adjacent(graph, i, focus) : node->id >= 0 && node->id == selected(graph);
+        gboolean dim = !adjacent(graph, i, focus);
         cairo_save(cr); if (dim) cairo_push_group(cr);
         rounded(cr, pos.x, pos.y, 200, 62); theme_cairo(cr, active ? THEME_SELECTION : THEME_SURFACE, 1); cairo_fill_preserve(cr);
         theme_cairo(cr, active || (gint)i == graph->hovered ? THEME_ACCENT : THEME_BORDER, 1);
@@ -338,7 +373,8 @@ static void draw(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpoin
         g_autofree char *title = changed ? g_strdup_printf("● %s", node->title) : g_strdup(node->title);
         text(cr, title, pos.x + 12, pos.y + 9, 176, 11, TRUE, THEME_TEXT);
         g_autofree char *subtitle = pos.cycle ? g_strdup_printf("↻ цикл · %s", node->subtitle) : g_strdup(node->subtitle);
-        text(cr, subtitle, pos.x + 12, pos.y + 35, 176, 9, FALSE, THEME_MUTED);
+        text_font(cr, subtitle, pos.x + 12, pos.y + 35, 176, 9, FALSE, pos.cycle ? THEME_WARNING : THEME_MUTED,
+                  graph->target_mode || node->id < 0 ? "Sans" : "Monospace");
         if (dim) { cairo_pop_group_to_source(cr); cairo_paint_with_alpha(cr, .4); } cairo_restore(cr);
     }
     cairo_restore(cr);
@@ -359,7 +395,8 @@ static void released(GtkGestureClick *gesture, int presses, double x, double y, 
         if (found >= 0) { Node *node = g_ptr_array_index(graph->nodes, (guint)found); g_hash_table_remove(graph->expanded, node->group); rebuild(graph); }
     } else if (!graph->drag_moved && !graph_activate_at(graph, x, y)) {
         gint edge = hit_edge(graph, x, y);
-        if (edge >= 0 && graph->explain) graph->explain(graph->target_mode, g_array_index(graph->origins, guint, (guint)edge), graph->user_data);
+        if (edge >= 0) graph_select_edge(graph, g_array_index(graph->origins, guint, (guint)edge));
+        else { graph->selected_edge = -1; gtk_widget_queue_draw(graph->area); }
     }
 }
 static void drag_begin(GtkGestureDrag *gesture, double x, double y, gpointer data)
@@ -391,7 +428,7 @@ static void leave(GtkEventControllerMotion *controller, gpointer data)
 
 Graph *graph_new(GraphOpenFile open_file, GraphSelectTarget select_target, gpointer user_data)
 {
-    Graph *graph = g_new0(Graph, 1); graph->selected = graph->selected_target = graph->hovered = -1; graph->zoom = 1; graph->depth = 1;
+    Graph *graph = g_new0(Graph, 1); graph->selected = graph->selected_target = graph->hovered = graph->selected_edge = -1; graph->zoom = 1; graph->depth = 1;
     graph->nodes = g_ptr_array_new_with_free_func(node_free); graph->edges = g_array_new(FALSE, FALSE, sizeof(LayoutEdge));
     graph->origins = g_array_new(FALSE, FALSE, sizeof(guint));
     graph->expanded = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
@@ -428,6 +465,16 @@ void graph_free(Graph *graph)
 }
 
 void graph_set_explain(Graph *graph, GraphExplain explain) { graph->explain = explain; }
+gboolean graph_select_edge(Graph *graph, guint origin)
+{
+    for (guint i = 0; i < graph->origins->len; i++) {
+        if (g_array_index(graph->origins, guint, i) != origin) continue;
+        graph->selected_edge = (gint)i;
+        if (graph->explain) graph->explain(graph->target_mode, origin, graph->user_data);
+        gtk_widget_queue_draw(graph->area); return TRUE;
+    }
+    return FALSE;
+}
 void graph_set_filter(Graph *graph, const char *query, guint direction, guint depth)
 { g_free(graph->query); graph->query = g_strdup(query); graph->direction = direction; graph->depth = depth; rebuild(graph); }
 void graph_set_changed(Graph *graph, GHashTable *paths)

@@ -75,6 +75,9 @@ SessionState *session_load(SessionStore *store, const char *root)
     state->overview = g_key_file_get_boolean(store->keys, key, "overview", NULL);
     state->groups = g_key_file_get_boolean(store->keys, key, "groups", NULL);
     state->log_visible = g_key_file_get_boolean(store->keys, key, "log-visible", NULL);
+    state->view = (guint)integer(store->keys, key, "view", 0, 2, 0);
+    state->split = !g_key_file_has_key(store->keys, key, "split", NULL) || g_key_file_get_boolean(store->keys, key, "split", NULL);
+    state->inspector = g_key_file_get_boolean(store->keys, key, "inspector", NULL);
     gsize count = 0; state->expanded = g_key_file_get_string_list(store->keys, key, "expanded", &count, NULL);
     if (count > 200) g_clear_pointer(&state->expanded, g_strfreev);
     return state;
@@ -102,6 +105,8 @@ gboolean session_save(SessionStore *store, const char *root, const SessionState 
     for (guint i = 0; i < G_N_ELEMENTS(ints); i++) g_key_file_set_integer(keys, key, ints[i], values[i]);
     g_key_file_set_boolean(keys, key, "target-mode", state->target_mode); g_key_file_set_boolean(keys, key, "overview", state->overview);
     g_key_file_set_boolean(keys, key, "groups", state->groups); g_key_file_set_boolean(keys, key, "log-visible", state->log_visible);
+    g_key_file_set_integer(keys, key, "view", MIN(state->view, 2));
+    g_key_file_set_boolean(keys, key, "split", state->split); g_key_file_set_boolean(keys, key, "inspector", state->inspector);
     g_key_file_set_double(keys, key, "zoom", state->zoom); g_key_file_set_double(keys, key, "offset-x", state->offset_x); g_key_file_set_double(keys, key, "offset-y", state->offset_y);
     g_autoptr(GPtrArray) bounded = g_ptr_array_new(); gsize expanded_bytes = 0;
     for (guint i = 0; state->expanded && state->expanded[i] && i < 200; i++) {

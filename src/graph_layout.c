@@ -142,6 +142,37 @@ GraphLayout *graph_layout_build(guint count, const GArray *edges)
     return result;
 }
 
+void graph_layout_group(GraphLayout *layout, const char *const *groups)
+{
+    if (!layout || !groups) return;
+    g_autoptr(GHashTable) seen = g_hash_table_new(g_str_hash, g_str_equal);
+    double top = 80;
+    for (guint first = 0; first < layout->nodes->len; first++) {
+        const char *group = groups[first];
+        if (g_hash_table_contains(seen, group)) continue;
+        g_hash_table_add(seen, (gpointer)group);
+        /* Input positions already contain the crossing-reduced order. */
+        double bottom = top;
+        /* Store the new order separately before changing any positions. */
+        g_autofree double *positions = g_new(double, layout->nodes->len);
+        for (guint i = 0; i < layout->nodes->len; i++) {
+            if (!g_str_equal(groups[i], group)) continue;
+            LayoutNode node = g_array_index(layout->nodes, LayoutNode, i);
+            guint row = 0;
+            for (guint j = 0; j < layout->nodes->len; j++) {
+                LayoutNode other = g_array_index(layout->nodes, LayoutNode, j);
+                if (g_str_equal(groups[j], group) && other.layer == node.layer && other.y < node.y) row++;
+            }
+            positions[i] = top + row * 100.0;
+            bottom = MAX(bottom, positions[i] + 62);
+        }
+        for (guint i = 0; i < layout->nodes->len; i++)
+            if (g_str_equal(groups[i], group)) g_array_index(layout->nodes, LayoutNode, i).y = positions[i];
+        top = bottom + 86;
+    }
+    layout->height = MAX(160, top - 40);
+}
+
 void graph_layout_free(GraphLayout *layout)
 {
     if (!layout) return;

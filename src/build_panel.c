@@ -48,6 +48,7 @@ static void output(const char *line, gpointer data)
         diagnostic->warning ? " · предупреждение" : "", diagnostic->message);
     if (g_utf8_strlen(text, -1) > 600) *g_utf8_offset_to_pointer(text, 600) = 0;
     GtkWidget *label = gtk_label_new(text);
+    gtk_widget_add_css_class(label, diagnostic->warning ? "warning" : "error");
     gtk_label_set_xalign(GTK_LABEL(label), 0); gtk_label_set_wrap(GTK_LABEL(label), TRUE);
     gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR); gtk_label_set_max_width_chars(GTK_LABEL(label), 80);
     gtk_widget_set_margin_start(label, 12); gtk_widget_set_margin_end(label, 12);
@@ -63,9 +64,12 @@ static void finished(gint code, gboolean stopped, gpointer data)
 {
     BuildPanel *panel = data;
     panel->exit_code = code; panel->stopped = stopped;
-    g_autofree char *message = stopped ? g_strdup("Сборка остановлена") : code == 0 ? g_strdup("Сборка завершена успешно") :
-        g_strdup_printf("Сборка завершилась с ошибкой · код %d", code);
+    g_autofree char *message = stopped ? g_strdup("Задача остановлена") : code == 0 ? g_strdup("Задача завершена успешно") :
+        g_strdup_printf("Задача завершилась с ошибкой · код %d", code);
     append_log(panel, message); gtk_label_set_text(panel->result, message);
+    gtk_widget_remove_css_class(GTK_WIDGET(panel->result), "warning");
+    gtk_widget_remove_css_class(GTK_WIDGET(panel->result), "error");
+    if (stopped || code != 0) gtk_widget_add_css_class(GTK_WIDGET(panel->result), stopped ? "warning" : "error");
     gtk_widget_set_sensitive(panel->stop, FALSE);
     build_run_unref(panel->run); panel->run = NULL;
     build_plan_free(panel->plan); panel->plan = NULL; panel->project = NULL;
@@ -85,7 +89,7 @@ static void activated(GtkListBox *list, GtkListBoxRow *row, gpointer data)
     if (encoded) build_panel_open_diagnostic(data, encoded - 1);
 }
 void build_panel_stop(BuildPanel *panel)
-{ if (panel->run) { gtk_label_set_text(panel->result, "Остановка сборки…"); build_run_stop(panel->run); } }
+{ if (panel->run) { gtk_label_set_text(panel->result, "Остановка задачи…"); build_run_stop(panel->run); } }
 void build_panel_observe(BuildPanel *panel, BuildOutput callback, gpointer data)
 { panel->observer = callback; panel->observer_data = data; }
 static void stop_clicked(GtkButton *button, gpointer data) { (void)button; build_panel_stop(data); }
@@ -101,7 +105,7 @@ BuildPanel *build_panel_new(BuildNavigate navigate, BuildFinished callback, gpoi
     panel->diagnostics = g_ptr_array_new_with_free_func(build_diagnostic_free); panel->exit_code = -1;
     panel->box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0); gtk_widget_set_size_request(panel->box, -1, 110);
     GtkWidget *toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8); gtk_widget_add_css_class(toolbar, "toolbar");
-    panel->result = GTK_LABEL(gtk_label_new("Сборка ещё не запускалась"));
+    panel->result = GTK_LABEL(gtk_label_new("Журнал задач"));
     gtk_label_set_xalign(panel->result, 0); gtk_label_set_ellipsize(panel->result, PANGO_ELLIPSIZE_END);
     gtk_widget_set_hexpand(GTK_WIDGET(panel->result), TRUE); gtk_box_append(GTK_BOX(toolbar), GTK_WIDGET(panel->result));
     panel->stop = gtk_button_new_with_label("Остановить"); gtk_widget_set_sensitive(panel->stop, FALSE);
@@ -131,7 +135,9 @@ gboolean build_panel_start(BuildPanel *panel, const Project *project, BuildPlan 
     while ((child = gtk_widget_get_first_child(GTK_WIDGET(panel->diagnostics_list)))) gtk_list_box_remove(panel->diagnostics_list, child);
     g_ptr_array_set_size(panel->diagnostics, 0); gtk_label_set_text(panel->diagnostic_title, "Диагностика");
     panel->project = project; panel->plan = plan; panel->exit_code = -1; panel->stopped = FALSE;
-    gtk_label_set_text(panel->result, "Сборка выполняется…"); gtk_widget_set_sensitive(panel->stop, TRUE);
+    gtk_widget_remove_css_class(GTK_WIDGET(panel->result), "warning");
+    gtk_widget_remove_css_class(GTK_WIDGET(panel->result), "error");
+    gtk_label_set_text(panel->result, "Задача выполняется…"); gtk_widget_set_sensitive(panel->stop, TRUE);
     append_log(panel, plan->display);
     g_autofree char *directory = g_strdup_printf("Рабочий каталог: %s", plan->directory); append_log(panel, directory);
     panel->run = build_run_start((const char *const *)plan->argv, plan->directory, output, finished, panel);

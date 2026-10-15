@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=StartApp
+Name=SourceAtlas
 Comment=Project dependency map and source editor
 Comment[ru]=Карта зависимостей проекта и редактор исходников
-Exec=startapp %f
+Exec=sourceatlas %f
 Icon=io.github.PaperGooseRus.StartApp
 Terminal=false
 Categories=Development;IDE;
