@@ -88,7 +88,7 @@ char **session_recent(SessionStore *store)
     g_ptr_array_add(recent, NULL); return (char **)g_ptr_array_free(recent, FALSE);
 }
 static void set_string(GKeyFile *keys, const char *group, const char *key, const char *value)
-{ if (value) g_key_file_set_string(keys, group, key, value); else g_key_file_remove_key(keys, group, key, NULL); }
+{ if (value && strlen(value) <= 8192) g_key_file_set_string(keys, group, key, value); else g_key_file_remove_key(keys, group, key, NULL); }
 gboolean session_save(SessionStore *store, const char *root, const SessionState *state, GError **error)
 {
     g_autofree char *key = root_key(root), *canonical = g_canonicalize_filename(root, NULL);
@@ -103,8 +103,12 @@ gboolean session_save(SessionStore *store, const char *root, const SessionState 
     g_key_file_set_boolean(keys, key, "target-mode", state->target_mode); g_key_file_set_boolean(keys, key, "overview", state->overview);
     g_key_file_set_boolean(keys, key, "groups", state->groups); g_key_file_set_boolean(keys, key, "log-visible", state->log_visible);
     g_key_file_set_double(keys, key, "zoom", state->zoom); g_key_file_set_double(keys, key, "offset-x", state->offset_x); g_key_file_set_double(keys, key, "offset-y", state->offset_y);
-    if (state->expanded) g_key_file_set_string_list(keys, key, "expanded", (const char *const *)state->expanded, g_strv_length(state->expanded));
-    else g_key_file_remove_key(keys, key, "expanded", NULL);
+    g_autoptr(GPtrArray) bounded = g_ptr_array_new(); gsize expanded_bytes = 0;
+    for (guint i = 0; state->expanded && state->expanded[i] && i < 200; i++) {
+        gsize size = strlen(state->expanded[i]);
+        if (size <= 8192 && expanded_bytes + size < 65536) { g_ptr_array_add(bounded, state->expanded[i]); expanded_bytes += size; }
+    }
+    g_key_file_set_string_list(keys, key, "expanded", (const char *const *)bounded->pdata, bounded->len);
     g_auto(GStrv) old = session_recent(store);
     g_autoptr(GPtrArray) recent = g_ptr_array_new_with_free_func(g_free); g_ptr_array_add(recent, g_strdup(canonical));
     for (guint i = 0; old[i]; i++) {
@@ -117,5 +121,12 @@ gboolean session_save(SessionStore *store, const char *root, const SessionState 
     g_autofree char *parent = g_path_get_dirname(store->filename);
     if (g_mkdir_with_parents(parent, 0700) != 0) { g_set_error(error, G_FILE_ERROR, g_file_error_from_errno(errno), "Cannot create session directory: %s", g_strerror(errno)); return FALSE; }
     gsize length; g_autofree char *text = g_key_file_to_data(keys, &length, error);
+    while (text && length > 1024*1024 && recent->len > 1) {
+        g_autofree char *oldest = root_key(g_ptr_array_index(recent, recent->len-1));
+        g_key_file_remove_group(keys, oldest, NULL); g_ptr_array_remove_index(recent, recent->len-1);
+        g_key_file_set_string_list(keys, "application", "recent", (const char *const *)recent->pdata, recent->len);
+        g_free(text); text = g_key_file_to_data(keys, &length, error);
+    }
+    if (text && length > 1024*1024) { g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_NO_SPACE, "Session exceeds 1 MiB"); return FALSE; }
     return text && g_file_set_contents_full(store->filename, text, (gssize)length, G_FILE_SET_CONTENTS_CONSISTENT, 0600, error);
 }

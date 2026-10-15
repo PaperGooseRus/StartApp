@@ -4,8 +4,8 @@ CPPFLAGS += -Isrc $(shell $(PKG_CONFIG) --cflags gtk4 json-glib-1.0 gtksourcevie
 CFLAGS ?= -O2 -g
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Werror -MMD -MP
 LDLIBS += $(shell $(PKG_CONFIG) --libs gtk4 json-glib-1.0 gtksourceview-5) -lm
-CORE = build/project.o build/document.o build/build_metadata.o build/graph_layout.o build/build.o build/session.o build/build_fixture.o
-APP = $(CORE) build/app.o build/editor.o build/graph.o build/theme.o build/build_panel.o build/main.o build/startapp-resources.o
+CORE = build/project.o build/document.o build/build_metadata.o build/graph_layout.o build/build.o build/session.o build/build_fixture.o build/workspace_tools.o build/extra_metadata.o build/language_client.o build/recovery.o build/snapshot.o
+APP = $(CORE) build/app.o build/editor.o build/graph.o build/theme.o build/build_panel.o build/tools_ui.o build/language_ui.o build/main.o build/startapp-resources.o
 
 .DELETE_ON_ERROR:
 
@@ -38,12 +38,20 @@ build/test-core: tests/test_core.c $(CORE) Makefile
 build/test-build: tests/test_build_run.c $(CORE) Makefile
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_build_run.c $(CORE) $(LDLIBS) -o $@
 
+build/test-tools: tests/test_tools.c $(CORE) Makefile
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_tools.c $(CORE) $(LDLIBS) -o $@
+
+build/test-workflows: tests/test_workflows.c $(CORE) Makefile
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_workflows.c $(CORE) $(LDLIBS) -o $@
+
 run: build/startapp
 	./build/startapp .
 
-test: build/test-core build/test-build
+test: build/test-core build/test-build build/test-tools build/test-workflows
 	./build/test-core
 	./build/test-build
+	./build/test-tools
+	./build/test-workflows
 
 test-ui: build/startapp
 	sh tests/run_ui.sh

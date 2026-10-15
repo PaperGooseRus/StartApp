@@ -4,6 +4,8 @@
 #include <gtksourceview/gtksource.h>
 
 GtkTextView *editor_new(void);
+GtkTextBuffer *editor_buffer_new(void);
+void editor_use_buffer(GtkTextView *view, GtkTextBuffer *buffer);
 void editor_set_language(GtkTextView *view, const char *filename);
 
 void editor_attach_gutter(GtkTextView *view, GtkScrolledWindow *scroll);

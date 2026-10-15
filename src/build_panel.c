@@ -14,6 +14,8 @@ struct BuildPanel {
     gpointer data;
     gint exit_code;
     gboolean stopped;
+    BuildOutput observer;
+    gpointer observer_data;
 };
 
 static void append_log(BuildPanel *panel, const char *line)
@@ -37,6 +39,7 @@ static void append_log(BuildPanel *panel, const char *line)
 static void output(const char *line, gpointer data)
 {
     BuildPanel *panel = data; append_log(panel, line);
+    if (panel->observer) panel->observer(line, panel->observer_data);
     if (panel->diagnostics->len >= 200) return;
     BuildDiagnostic *diagnostic = build_diagnostic_parse(line, panel->plan->directory, panel->project);
     if (!diagnostic) return;
@@ -83,6 +86,8 @@ static void activated(GtkListBox *list, GtkListBoxRow *row, gpointer data)
 }
 void build_panel_stop(BuildPanel *panel)
 { if (panel->run) { gtk_label_set_text(panel->result, "Остановка сборки…"); build_run_stop(panel->run); } }
+void build_panel_observe(BuildPanel *panel, BuildOutput callback, gpointer data)
+{ panel->observer = callback; panel->observer_data = data; }
 static void stop_clicked(GtkButton *button, gpointer data) { (void)button; build_panel_stop(data); }
 static GtkWidget *scrolled(GtkWidget *child)
 {

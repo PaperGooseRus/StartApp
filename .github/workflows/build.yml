@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install GTK4 and build tools
-        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libjson-glib-dev libgtksourceview-5-dev cmake ninja-build pkg-config xvfb xauth dbus-daemon
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libjson-glib-dev libgtksourceview-5-dev cmake ninja-build pkg-config xvfb xauth dbus-daemon clangd gdb meson make git
       - name: Build and package
         run: sh scripts/build-linux.sh
       - name: Test GUI
@@ -48,6 +48,10 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-binutils
+            mingw-w64-ucrt-x86_64-clang-tools-extra
+            mingw-w64-ucrt-x86_64-gdb
+            mingw-w64-ucrt-x86_64-meson
+            mingw-w64-ucrt-x86_64-make
       - name: Build, core tests and portable ZIP
         run: bash scripts/build-windows.sh
       - name: Test native GTK4 GUI

@@ -228,6 +228,7 @@ static void import_commands(Project *project, const char *path)
             }
         }
         ensure_settings(file, path, TRUE);
+        g_free(file->compile_options); file->compile_options = g_strjoinv(" ", args);
         for (guint j = 1; args[j]; j++) {
             const char *flag = args[j], *value = NULL;
             if (g_str_equal(flag, "-I-")) {
@@ -425,7 +426,20 @@ static void import_cmake(Project *project, const char *directory, const char *co
                 note(project, file->path, "multiple CMake compile groups; first group used"); continue;
             }
             ensure_settings(file, "CMake File API", FALSE);
-            JsonArray *includes = array_node(member(element(groups, (guint)group_index), "includes"));
+            JsonObject *cg = element(groups, (guint)group_index);
+            GString *options = g_string_new(NULL);
+            JsonArray *fragments = array_node(member(cg, "compileCommandFragments"));
+            for (guint k = 0; fragments && k < MIN(json_array_get_length(fragments), ENTRY_LIMIT); k++) {
+                const char *fragment = string_member(element(fragments, k), "fragment");
+                if (fragment && options->len < 65536) g_string_append_printf(options, "%s ", fragment);
+            }
+            JsonArray *defines = array_node(member(cg, "defines"));
+            for (guint k = 0; defines && k < MIN(json_array_get_length(defines), ENTRY_LIMIT); k++) {
+                const char *define = string_member(element(defines, k), "define");
+                if (define && options->len < 65536) g_string_append_printf(options, "-D%s ", define);
+            }
+            file->compile_options = g_string_free(options, FALSE);
+            JsonArray *includes = array_node(member(cg, "includes"));
             for (guint k = 0; includes && k < json_array_get_length(includes) && k < ENTRY_LIMIT; k++) {
                 JsonObject *include = element(includes, k);
                 const char *include_path = string_member(include, "path");
@@ -453,7 +467,8 @@ static gboolean has_metadata(const char *directory)
     g_autofree char *commands = g_build_filename(directory, "compile_commands.json", NULL);
     g_autofree char *reply = g_build_filename(directory, ".cmake", "api", "v1", "reply", NULL);
     g_autofree char *cache = g_build_filename(directory, "CMakeCache.txt", NULL);
-    return g_file_test(commands, G_FILE_TEST_IS_REGULAR) || g_file_test(reply, G_FILE_TEST_IS_DIR) || g_file_test(cache, G_FILE_TEST_IS_REGULAR);
+    g_autofree char *meson = g_build_filename(directory, "meson-info", "intro-targets.json", NULL);
+    return g_file_test(meson, G_FILE_TEST_IS_REGULAR) || g_file_test(commands, G_FILE_TEST_IS_REGULAR) || g_file_test(reply, G_FILE_TEST_IS_DIR) || g_file_test(cache, G_FILE_TEST_IS_REGULAR);
 }
 
 static void import_cache(Project *project)

@@ -1,5 +1,6 @@
 #include "project.h"
 #include "build_metadata.h"
+#include "extra_metadata.h"
 
 #include <string.h>
 
@@ -33,6 +34,7 @@ static void file_free(gpointer data)
     ProjectFile *file = data;
     g_free(file->path);
     g_free(file->settings_source);
+    g_free(file->compile_options); g_free(file->content_hash);
     g_clear_pointer(&file->quote_dirs, g_ptr_array_unref);
     g_clear_pointer(&file->include_dirs, g_ptr_array_unref);
     g_clear_pointer(&file->system_dirs, g_ptr_array_unref);
@@ -51,6 +53,7 @@ static void edge_free(gpointer data)
 void project_free(Project *project)
 {
     if (!project) return;
+    g_clear_object(&project->cancel);
     g_free(project->root);
     g_ptr_array_unref(project->files);
     g_ptr_array_unref(project->edges);
@@ -108,6 +111,7 @@ static gboolean ignored_directory(const char *name)
 static gboolean walk(Project *project, const char *relative, guint depth,
                      GError **error)
 {
+    if (g_cancellable_set_error_if_cancelled(project->cancel, error)) return FALSE;
     if (depth > MAX_DEPTH || project->files->len >= MAX_FILES) {
         project->skipped++;
         return TRUE;
@@ -117,11 +121,11 @@ static gboolean walk(Project *project, const char *relative, guint depth,
     g_autoptr(GFileEnumerator) iterator = g_file_enumerate_children(directory,
         G_FILE_ATTRIBUTE_STANDARD_NAME "," G_FILE_ATTRIBUTE_STANDARD_TYPE ","
         G_FILE_ATTRIBUTE_STANDARD_SIZE "," G_FILE_ATTRIBUTE_STANDARD_IS_SYMLINK,
-        G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, NULL, error);
+        G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, project->cancel, error);
     if (!iterator) return FALSE;
 
     while (TRUE) {
-        g_autoptr(GFileInfo) info = g_file_enumerator_next_file(iterator, NULL, error);
+        g_autoptr(GFileInfo) info = g_file_enumerator_next_file(iterator, project->cancel, error);
         if (!info) return !error || !*error;
         const char *name = g_file_info_get_name(info);
         if (!g_utf8_validate(name, -1, NULL) || g_file_info_get_is_symlink(info)) {
@@ -255,7 +259,7 @@ static char *without_comments(const char *text)
     return result;
 }
 
-static void parse_includes(Project *project, guint index)
+static void parse_includes(Project *project, guint index, const Project *previous)
 {
     ProjectFile *file = g_ptr_array_index(project->files, index);
     file->include_start = project->edges->len;
@@ -271,6 +275,18 @@ static void parse_includes(Project *project, guint index)
         !g_utf8_validate(text, (gssize)length, NULL)) {
         g_ptr_array_add(project->notes, g_strdup_printf("%s: not supported UTF-8 text", file->path));
         return;
+    }
+    file->content_hash = g_compute_checksum_for_data(G_CHECKSUM_SHA256, (const guchar *)text, length);
+    gint old_index = previous ? project_find_file(previous, file->path) : -1;
+    ProjectFile *old = old_index >= 0 ? g_ptr_array_index(previous->files, (guint)old_index) : NULL;
+    if (old && g_strcmp0(old->content_hash, file->content_hash) == 0) {
+        for (guint i = old->include_start; i < old->include_start + old->include_count; i++) {
+            ProjectEdge *src = g_ptr_array_index(previous->edges, i), *edge = g_new0(ProjectEdge, 1);
+            edge->from = index; edge->include = g_strdup(src->include); edge->line = src->line; edge->system = src->system;
+            edge->to = resolve_include(project, file->path, edge->include, edge->system, &edge->ambiguous);
+            g_ptr_array_add(project->edges, edge);
+        }
+        file->include_count = project->edges->len - file->include_start; project->reused_files++; return;
     }
     g_autofree char *clean = without_comments(text);
     g_auto(GStrv) lines = g_strsplit(clean, "\n", -1);
@@ -369,8 +385,8 @@ static void apply_compile_contexts(Project *project)
     }
 }
 
-Project *project_scan_build(const char *directory, const char *build_directory,
-                            const char *configuration, GError **error)
+Project *project_scan_incremental(const char *directory, const char *build_directory,
+    const char *configuration, const Project *previous, GCancellable *cancel, GError **error)
 {
     g_autofree char *canonical = g_canonicalize_filename(directory, NULL);
     g_autoptr(GFile) root = g_file_new_for_path(canonical);
@@ -383,6 +399,7 @@ Project *project_scan_build(const char *directory, const char *build_directory,
         return NULL;
     }
     Project *project = g_new0(Project, 1);
+    project->cancel = cancel ? g_object_ref(cancel) : NULL;
     project->root = g_strdup(canonical);
     project->files = g_ptr_array_new_with_free_func(file_free);
     project->edges = g_ptr_array_new_with_free_func(edge_free);
@@ -408,13 +425,19 @@ Project *project_scan_build(const char *directory, const char *build_directory,
         g_hash_table_insert(project->file_index, key, GUINT_TO_POINTER(i + 1));
     }
     build_metadata_import(project, build_directory, configuration);
+    extra_metadata_import(project);
     for (guint i = 0; i < project->files->len; i++) {
         ProjectFile *file = g_ptr_array_index(project->files, i);
-        if (file->source) parse_includes(project, i);
+        if (g_cancellable_set_error_if_cancelled(cancel, error)) { project_free(project); return NULL; }
+        if (file->source) parse_includes(project, i, previous);
     }
     apply_compile_contexts(project);
+    g_clear_object(&project->cancel);
     return project;
 }
+
+Project *project_scan_build(const char *directory, const char *build_directory, const char *configuration, GError **error)
+{ return project_scan_incremental(directory, build_directory, configuration, NULL, NULL, error); }
 
 Project *project_scan(const char *directory, GError **error)
 {
@@ -587,11 +610,12 @@ char *project_build_summary(const Project *project, gint target_index)
     if (ninja) g_string_append(text, "• Ninja\n");
     if (meson) g_string_append(text, "• Meson\n");
     if (!cmake && !make && !ninja && !meson) g_string_append(text, "Не найдены\n");
-    g_string_append_printf(text, "\nНастроенная сборка:\nГенератор: %s\nCMake: %s\nРежим: %s\nКаталог: %s\nКонфигурация: %s\n",
-        project->generator ? project->generator : "неизвестен", project->cmake_version ? project->cmake_version : "версия неизвестна",
+    g_string_append_printf(text, "\nНастроенная сборка:\nГенератор / источник: %s\nРежим: %s\nКаталог: %s\nКонфигурация: %s\n",
+        project->generator ? project->generator : "неизвестен",
         project->generator ? project->multi_config ? "несколько конфигураций" : "одна конфигурация" : "неизвестен",
         project->build_directory ? project->build_directory : "не выбран",
         project->configuration && *project->configuration ? project->configuration : "не задана");
+    if (project->cmake_version) g_string_append_printf(text, "CMake: %s\n", project->cmake_version);
     if (project->configurations->len) {
         g_string_append(text, "Доступны: ");
         for (guint i = 0; i < project->configurations->len; i++) {

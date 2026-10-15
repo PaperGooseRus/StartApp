@@ -10,6 +10,7 @@ typedef struct {
     gboolean build_file;
     gboolean compile_settings;
     char *settings_source;
+    char *compile_options, *content_hash;
     GPtrArray *quote_dirs;
     GPtrArray *include_dirs;
     GPtrArray *system_dirs;
@@ -64,11 +65,15 @@ typedef struct {
     char *cmake_version, *generator;
     gboolean multi_config;
     GPtrArray *compilers, *presets;
+    GCancellable *cancel; /* Owned only during scanning. */
+    guint reused_files;
 } Project;
 
 Project *project_scan(const char *directory, GError **error);
 Project *project_scan_build(const char *directory, const char *build_directory,
                             const char *configuration, GError **error);
+Project *project_scan_incremental(const char *directory, const char *build_directory,
+    const char *configuration, const Project *previous, GCancellable *cancel, GError **error);
 void project_free(Project *project);
 gint project_find_file(const Project *project, const char *relative_path);
 gint project_find_absolute(const Project *project, const char *path);

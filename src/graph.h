@@ -6,10 +6,14 @@
 
 typedef struct Graph Graph;
 typedef void (*GraphOpenFile)(guint index, gpointer user_data);
+typedef void (*GraphExplain)(gboolean targets, guint edge, gpointer user_data);
 typedef void (*GraphSelectTarget)(guint index, gpointer user_data);
 
 Graph *graph_new(GraphOpenFile open_file, GraphSelectTarget select_target, gpointer user_data);
 GtkWidget *graph_widget(Graph *graph);
+void graph_set_explain(Graph *graph, GraphExplain explain);
+void graph_set_filter(Graph *graph, const char *query, guint direction, guint depth);
+void graph_set_changed(Graph *graph, GHashTable *paths);
 void graph_set_project(Graph *graph, const Project *project, gint selected);
 void graph_set_overview(Graph *graph, gboolean overview);
 void graph_set_target_mode(Graph *graph, gboolean active);

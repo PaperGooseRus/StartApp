@@ -48,6 +48,16 @@ GtkTextView *editor_new(void)
     return GTK_TEXT_VIEW(view);
 }
 
+GtkTextBuffer *editor_buffer_new(void)
+{
+    GtkSourceBuffer *buffer = gtk_source_buffer_new(NULL);
+    GtkSourceStyleSchemeManager *styles = gtk_source_style_scheme_manager_get_default();
+    gtk_source_buffer_set_style_scheme(buffer, gtk_source_style_scheme_manager_get_scheme(styles, "startapp-dark"));
+    gtk_source_buffer_set_highlight_matching_brackets(buffer, TRUE);
+    gtk_source_buffer_set_implicit_trailing_newline(buffer, FALSE);
+    return GTK_TEXT_BUFFER(buffer);
+}
+
 void editor_set_language(GtkTextView *view, const char *filename)
 {
     GtkSourceLanguageManager *manager = gtk_source_language_manager_get_default();
@@ -149,12 +159,26 @@ static void scroll_changed(GtkAdjustment *adjustment, gpointer data)
     gtk_widget_queue_draw(data);
 }
 
+void editor_use_buffer(GtkTextView *view, GtkTextBuffer *buffer)
+{
+    GtkWidget *area = g_object_get_data(G_OBJECT(view), "startapp-gutter-area");
+    GtkTextBuffer *old = gtk_text_view_get_buffer(view);
+    if (area) g_signal_handlers_disconnect_by_data(old, area);
+    gtk_text_view_set_buffer(view, buffer);
+    if (area) {
+        g_signal_connect_object(buffer, "changed", G_CALLBACK(refresh_width), area, 0);
+        g_signal_connect_object(buffer, "mark-set", G_CALLBACK(mark_moved), area, 0);
+        refresh_width(buffer, area);
+    }
+}
+
 void editor_attach_gutter(GtkTextView *view, GtkScrolledWindow *scroll)
 {
     GtkWidget *area = gtk_drawing_area_new();
     Gutter *gutter = g_new0(Gutter, 1);
     gutter->view = view;
     g_object_set_data_full(G_OBJECT(view), "startapp-gutter-context", gutter, g_free);
+    g_object_set_data(G_OBJECT(view), "startapp-gutter-area", area);
     g_object_set_data(G_OBJECT(area), "gutter-context", gutter);
     gtk_widget_set_tooltip_text(area, "Номера строк · текущая строка выделена");
     gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(area), draw_gutter, gutter, NULL);
