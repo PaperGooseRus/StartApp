@@ -635,6 +635,43 @@ static void test_layout_bounds(void)
     graph_layout_free(layout);
 }
 
+static void test_group_layout(void)
+{
+    g_autoptr(GArray) edges = g_array_new(FALSE, FALSE, sizeof(LayoutEdge));
+    LayoutEdge links[] = {{0,1},{1,2},{2,3},{3,2},{4,1},{4,5},{5,6},{0,6}};
+    g_array_append_vals(edges, links, G_N_ELEMENTS(links));
+    const char *groups[] = {"src", "include", "src", "include", "tests", "tests", "src"};
+    GraphLayout *layout = graph_layout_build(7, edges), *again = graph_layout_build(7, edges);
+    graph_layout_group(layout, groups); graph_layout_group(again, groups);
+    for (guint i = 0; i < 7; i++) {
+        LayoutNode node = g_array_index(layout->nodes, LayoutNode, i);
+        LayoutNode repeat = g_array_index(again->nodes, LayoutNode, i);
+        g_assert_cmpfloat(node.y, ==, repeat.y);
+        g_assert_cmpfloat(node.y + 62, <=, layout->height);
+        for (guint j = i + 1; j < 7; j++) {
+            LayoutNode other = g_array_index(layout->nodes, LayoutNode, j);
+            if (g_str_equal(groups[i], groups[j]))
+                g_assert_true(node.x + 200 <= other.x || other.x + 200 <= node.x || node.y + 62 <= other.y || other.y + 62 <= node.y);
+        }
+    }
+    /* Entire directory containers, including their title/margins, stay disjoint. */
+    const char *unique[] = {"src", "include", "tests"}; double previous = 0;
+    for (guint g = 0; g < G_N_ELEMENTS(unique); g++) {
+        double top = G_MAXDOUBLE, bottom = 0;
+        for (guint i = 0; i < 7; i++) if (g_str_equal(groups[i], unique[g])) {
+            LayoutNode node = g_array_index(layout->nodes, LayoutNode, i);
+            top = MIN(top, node.y - 35); bottom = MAX(bottom, node.y + 80);
+        }
+        g_assert_cmpfloat(top, >, previous); previous = bottom;
+    }
+    for (guint i = 0; i < G_N_ELEMENTS(links); i++) {
+        LayoutNode from = g_array_index(layout->nodes, LayoutNode, links[i].from);
+        LayoutNode to = g_array_index(layout->nodes, LayoutNode, links[i].to);
+        if (from.component != to.component) g_assert_cmpuint(from.layer, <, to.layer);
+    }
+    graph_layout_free(layout); graph_layout_free(again);
+}
+
 static void test_build_profile(void)
 {
     g_autofree char *root = fixture(); cmake_fixture(root);
@@ -730,12 +767,14 @@ static void test_session(void)
     SessionState state = {.file = "src/МОДУЛЬ.c", .target = "core", .page = "build", .cmake = "C:/Tools/cmake.exe",
         .line = 101, .column = 3, .width = 1080, .height = 720, .sidebar = 260, .editor = 470, .log = 520,
         .target_mode = TRUE, .overview = TRUE, .groups = TRUE, .log_visible = TRUE, .zoom = .75,
-        .offset_x = 100.125, .offset_y = -50, .expanded = expanded, .configuration = "Release"};
+        .offset_x = 100.125, .offset_y = -50, .expanded = expanded, .configuration = "Release",
+        .view = 2, .split = TRUE, .inspector = TRUE};
     g_autoptr(GError) error = NULL;
     g_assert_true(session_save(store, root, &state, &error)); g_assert_no_error(error); session_store_free(store);
     store = session_store_new(path); SessionState *loaded = session_load(store, root);
     g_assert_nonnull(loaded); g_assert_cmpstr(loaded->file, ==, state.file); g_assert_cmpstr(loaded->target, ==, "core");
     g_assert_cmpstr(loaded->cmake, ==, state.cmake); g_assert_cmpuint(loaded->line, ==, 101);
+    g_assert_cmpuint(loaded->view, ==, 2); g_assert_true(loaded->split); g_assert_true(loaded->inspector);
     g_assert_cmpfloat(loaded->zoom, ==, .75); g_assert_cmpfloat(loaded->offset_x, ==, 100.125);
     g_assert_true(loaded->overview); g_assert_cmpstr(loaded->expanded[1], ==, "include"); session_state_free(loaded);
     state.width = 20; state.line = -1; state.zoom = NAN; state.offset_y = INFINITY;
@@ -783,6 +822,7 @@ int main(int argc, char **argv)
     g_test_add_func("/metadata/explicit-unicode-build-folder", test_explicit_build_folder);
     g_test_add_func("/graph/layers-cycles-no-overlap-and-stability", test_layout);
     g_test_add_func("/graph/bounded-long-chain", test_layout_bounds);
+    g_test_add_func("/graph/directory-containers-no-overlap", test_group_layout);
     g_test_add_func("/metadata/build-profile", test_build_profile);
     g_test_add_func("/metadata/cache-profile", test_cache_profile);
     g_test_add_func("/metadata/presets-includes-inheritance-and-cycles", test_presets);

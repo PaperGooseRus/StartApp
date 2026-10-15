@@ -2,5 +2,6 @@
 <gresources>
   <gresource prefix="/io/github/PaperGooseRus/StartApp">
     <file>styles/startapp-dark.xml</file>
+    <file alias="icons/scalable/apps/io.github.PaperGooseRus.StartApp.svg">../packaging/io.github.PaperGooseRus.StartApp.svg</file>
   </gresource>
 </gresources>

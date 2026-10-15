@@ -8,6 +8,8 @@ typedef struct {
     char **expanded;
     gint line, column, width, height, sidebar, editor, log;
     gboolean target_mode, overview, groups, log_visible;
+    guint view;
+    gboolean split, inspector;
     double zoom, offset_x, offset_y;
 } SessionState;
 

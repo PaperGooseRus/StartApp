@@ -1,6 +1,6 @@
 # Метаданные сборки
 
-StartApp 0.6 читает `compile_commands.json` и CMake File API codemodel v2/toolchains v1.
+SourceAtlas 0.6 читает `compile_commands.json` и CMake File API codemodel v2/toolchains v1.
 Он не запускает CMake, компилятор или команды из базы компиляции при открытии
 папки. Подготовьте метаданные своего проекта привычным способом, затем
 выберите каталог сборки в приложении.
@@ -26,10 +26,10 @@ cmake -S . -B build -G 'Ninja Multi-Config' -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 ```
 
 Сборка бинарника для получения карты не нужна. После изменения CMake-проекта
-повторите его конфигурацию, затем нажмите «Обновить карту» в StartApp.
+повторите его конфигурацию, затем нажмите «Обновить карту» в SourceAtlas.
 База компиляции экспортируется генераторами Ninja/Makefiles. Генератор
 Visual Studio предоставляет File API, но не `compile_commands.json`;
-StartApp использует пути включений из выбранных CMake compile groups.
+SourceAtlas использует пути включений из выбранных CMake compile groups.
 
 ## Открытие и навигация
 
@@ -38,13 +38,13 @@ StartApp использует пути включений из выбранны�
 Для другого расположения нажмите «Каталог сборки…» или передайте путь явно:
 
 ```sh
-./build/linux/startapp /путь/к/проекту --build-dir /путь/к/сборке --config Debug
-./build/linux/startapp --inspect /путь/к/проекту --build-dir /путь/к/сборке --config Release > project.json
+./build/linux/sourceatlas /путь/к/проекту --build-dir /путь/к/сборке --config Debug
+./build/linux/sourceatlas --inspect /путь/к/проекту --build-dir /путь/к/сборке --config Release > project.json
 ```
 
 ```powershell
-& 'C:\Apps\StartApp-Windows-x64\startapp.exe' 'C:\Projects\мой проект' --build-dir 'C:\Build\мой проект' --config Debug
-& 'C:\Apps\StartApp-Windows-x64\startapp-cli.exe' --inspect 'C:\Projects\мой проект' --build-dir 'C:\Build\мой проект' --config Release
+& 'C:\Apps\SourceAtlas-Windows-x64\sourceatlas.exe' 'C:\Projects\мой проект' --build-dir 'C:\Build\мой проект' --config Debug
+& 'C:\Apps\SourceAtlas-Windows-x64\sourceatlas-cli.exe' --inspect 'C:\Projects\мой проект' --build-dir 'C:\Build\мой проект' --config Release
 ```
 
 Относительный `--build-dir` считается от корня открытого проекта. В обычном

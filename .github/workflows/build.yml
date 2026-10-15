@@ -19,15 +19,15 @@ jobs:
         run: xvfb-run -a -s '-screen 0 1600x1000x24' dbus-run-session -- bash scripts/ci-gui-test.sh build/linux
       - uses: actions/upload-artifact@v4
         with:
-          name: StartApp-Linux-x64
-          path: build/linux/StartApp-*-Linux-*.tar.gz
+          name: SourceAtlas-Linux-x64
+          path: build/linux/SourceAtlas-*-Linux-*.tar.gz
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: Linux-test-results
           path: |
             build/linux/Testing/Temporary/LastTest.log
-            build/linux/smoke-ui.png
+            build/linux/smoke-ui*.png
   windows:
     runs-on: windows-latest
     defaults:
@@ -60,8 +60,8 @@ jobs:
       - name: Test relocated portable ZIP without MSYS2 in PATH
         shell: pwsh
         run: |
-          Expand-Archive dist/StartApp-Windows-x64.zip -DestinationPath "$env:RUNNER_TEMP/StartApp test"
-          $app = "$env:RUNNER_TEMP/StartApp test/StartApp-Windows-x64"
+          Expand-Archive dist/SourceAtlas-Windows-x64.zip -DestinationPath "$env:RUNNER_TEMP/SourceAtlas test"
+          $app = "$env:RUNNER_TEMP/SourceAtlas test/SourceAtlas-Windows-x64"
           $env:PATH = "$env:SystemRoot/System32;$env:SystemRoot"
           Remove-Item Env:GSETTINGS_SCHEMA_DIR -ErrorAction SilentlyContinue
           Remove-Item Env:XDG_DATA_DIRS -ErrorAction SilentlyContinue
@@ -69,7 +69,7 @@ jobs:
           Remove-Item Env:GDK_PIXBUF_MODULE_FILE -ErrorAction SilentlyContinue
           Remove-Item Env:GDK_PIXBUF_MODULEDIR -ErrorAction SilentlyContinue
           $env:STARTAPP_SMOKE_SCREENSHOT = "$env:RUNNER_TEMP/portable-smoke.png"
-          foreach ($exe in @('startapp-cli.exe', 'startapp.exe')) {
+          foreach ($exe in @('sourceatlas-cli.exe', 'sourceatlas.exe')) {
             $stdout = "$env:RUNNER_TEMP/portable-$exe.stdout"
             $stderr = "$env:RUNNER_TEMP/portable-$exe.stderr"
             $process = Start-Process "$app/$exe" -ArgumentList '--smoke-test' -WorkingDirectory $env:RUNNER_TEMP -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
@@ -86,14 +86,14 @@ jobs:
           }
       - uses: actions/upload-artifact@v4
         with:
-          name: StartApp-Windows-x64
-          path: dist/StartApp-Windows-x64.zip
+          name: SourceAtlas-Windows-x64
+          path: dist/SourceAtlas-Windows-x64.zip
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: Windows-test-results
           path: |
             build/windows/Testing/Temporary/LastTest.log
-            build/windows/smoke-ui.png
+            build/windows/smoke-ui*.png
             ${{ runner.temp }}/portable-*.stdout
             ${{ runner.temp }}/portable-*.stderr

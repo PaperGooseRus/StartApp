@@ -336,7 +336,7 @@ ToolsUI *tools_ui_new(GtkApplication *application, GtkWindow *parent, ToolsNavig
     ToolsUI *t = g_new0(ToolsUI, 1); t->changed = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL); t->application = application; t->navigate = nav; t->configured = configured; t->data = data;
     t->catalog_file = g_build_filename(g_get_user_config_dir(), "startapp", "catalog.ini", NULL);
     t->window = GTK_WINDOW(gtk_application_window_new(application)); gtk_window_set_transient_for(t->window, parent);
-    gtk_window_set_title(t->window, "StartApp · инструменты проекта"); gtk_window_set_default_size(t->window, 1120, 820); g_signal_connect(t->window, "close-request", G_CALLBACK(close_requested), t);
+    gtk_window_set_title(t->window, "SourceAtlas · инструменты проекта"); gtk_window_set_default_size(t->window, 1120, 820); g_signal_connect(t->window, "close-request", G_CALLBACK(close_requested), t);
     GtkWidget *body = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8); gtk_window_set_child(t->window, body);
     const char *names[] = {"Каталог проектов", "Поиск текста", "Последствия изменений", "Архитектура", "Сравнение конфигураций", "Git", "Окружение", "Конфигурация и сборка", "Запуск и отладка", "Экспорт карты", NULL};
     t->page_picker = GTK_DROP_DOWN(gtk_drop_down_new_from_strings(names)); gtk_box_append(GTK_BOX(body), GTK_WIDGET(t->page_picker));

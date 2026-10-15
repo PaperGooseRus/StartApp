@@ -44,9 +44,9 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         const char *arg = argv[i];
         if (g_str_equal(arg, "--help") || g_str_equal(arg, "-h")) {
-            g_print("StartApp - C / GTK4 project map and editor\n"
-                "Usage: startapp [--inspect] [PROJECT_DIRECTORY] [--build-dir DIRECTORY] [--config NAME]\n"
-                "       startapp --smoke-test (temporary fixture)\n");
+            g_print("SourceAtlas - C / GTK4 project map and editor\n"
+                "Usage: sourceatlas [--inspect] [PROJECT_DIRECTORY] [--build-dir DIRECTORY] [--config NAME]\n"
+                "       sourceatlas --smoke-test (temporary fixture)\n");
             return 0;
         }
         if (g_str_equal(arg, "--inspect")) inspect = TRUE;

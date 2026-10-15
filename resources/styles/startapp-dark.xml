@@ -1,25 +1,25 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<style-scheme id="startapp-dark" _name="StartApp Dark" version="1.0">
-  <author>StartApp</author>
+<style-scheme id="startapp-dark" _name="SourceAtlas Dark" version="1.0">
+  <author>SourceAtlas</author>
   <description>Charcoal editor with warm orange accents.</description>
-  <style name="text" foreground="#ece9e4" background="#181818"/>
-  <style name="selection" foreground="#ece9e4" background="#49342b"/>
+  <style name="text" foreground="#ece7df" background="#191817"/>
+  <style name="selection" foreground="#ece7df" background="#443128"/>
   <style name="selection-unfocused" background="#37312e"/>
-  <style name="cursor" foreground="#e79873"/>
+  <style name="cursor" foreground="#dc946d"/>
   <style name="current-line" background="#242220"/>
-  <style name="line-numbers" foreground="#aaa6a0" background="#202020"/>
-  <style name="bracket-match" foreground="#181818" background="#e79873" bold="true"/>
+  <style name="line-numbers" foreground="#aaa39a" background="#222120"/>
+  <style name="bracket-match" foreground="#191817" background="#dc946d" bold="true"/>
   <style name="bracket-mismatch" foreground="#ff9080" underline="true"/>
   <style name="def:comment" foreground="#96928c" italic="true"/>
   <style name="def:doc-comment-element" foreground="#b7aca1"/>
-  <style name="def:keyword" foreground="#e79873" bold="true"/>
+  <style name="def:keyword" foreground="#dc946d" bold="true"/>
   <style name="def:type" foreground="#edbd99"/>
   <style name="def:preprocessor" foreground="#e5ae87"/>
   <style name="def:string" foreground="#d8c5a6"/>
   <style name="def:constant" foreground="#e5bb80"/>
-  <style name="def:special-char" foreground="#e79873"/>
-  <style name="def:identifier" foreground="#ece9e4"/>
+  <style name="def:special-char" foreground="#dc946d"/>
+  <style name="def:identifier" foreground="#ece7df"/>
   <style name="def:function" foreground="#ebd4bd"/>
-  <style name="def:statement" foreground="#e79873"/>
+  <style name="def:statement" foreground="#dc946d"/>
   <style name="def:error" foreground="#ff9080" underline="true"/>
 </style-scheme>

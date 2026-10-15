@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-  <rect x="4" y="4" width="120" height="120" rx="24" fill="#131e2c"/>
-  <path d="M42 64H66V34H90M66 64V94H90" fill="none" stroke="#64d3b5" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="20" y="50" width="28" height="28" rx="7" fill="#246c61" stroke="#64d3b5" stroke-width="3"/>
-  <rect x="82" y="22" width="26" height="24" rx="6" fill="#223047" stroke="#83b9ef" stroke-width="3"/>
-  <rect x="82" y="82" width="26" height="24" rx="6" fill="#223047" stroke="#83b9ef" stroke-width="3"/>
+  <title>SourceAtlas</title>
+  <rect x="4" y="4" width="120" height="120" rx="24" fill="#191817"/>
+  <path d="M24 94 52 28 76 94M35 70H67M60 48H96V94H76" fill="none" stroke="#dc946d" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="96" cy="48" r="7" fill="#ece7df"/>
+  <circle cx="76" cy="94" r="7" fill="#dc946d"/>
 </svg>

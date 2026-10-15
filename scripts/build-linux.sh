@@ -8,4 +8,4 @@ cmake -S . -B build/linux -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COM
 cmake --build build/linux --parallel 2
 bash scripts/ci-core-tests.sh build/linux
 cmake --build build/linux --target package
-printf '%s\n' 'Built build/linux/startapp and a Linux archive in build/linux/.'
+printf '%s\n' 'Built build/linux/sourceatlas and a Linux archive in build/linux/.'

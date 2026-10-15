@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(StartApp VERSION 0.6.0 LANGUAGES C)
+project(SourceAtlas VERSION 0.7.0 LANGUAGES C)
 
 if(MSVC)
     message(FATAL_ERROR "Use the MSYS2 UCRT64 GCC toolchain on Windows; see docs/PLATFORMS.md")
@@ -26,7 +26,7 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/startapp-resources.c"
     COMMAND "${GLIB_COMPILE_RESOURCES}" --generate-source --c-name startapp_resources
         --target "${CMAKE_CURRENT_BINARY_DIR}/startapp-resources.c"
         --sourcedir "${CMAKE_CURRENT_SOURCE_DIR}/resources" "${CMAKE_CURRENT_SOURCE_DIR}/resources/startapp.gresource.xml"
-    DEPENDS resources/startapp.gresource.xml resources/styles/startapp-dark.xml)
+    DEPENDS resources/startapp.gresource.xml resources/styles/startapp-dark.xml packaging/io.github.PaperGooseRus.StartApp.svg)
 
 add_library(startapp_options INTERFACE)
 target_compile_options(startapp_options INTERFACE -Wall -Wextra -Wpedantic)
@@ -44,11 +44,13 @@ endif()
 
 add_executable(startapp src/main.c)
 target_link_libraries(startapp PRIVATE startapp_ui)
+set_target_properties(startapp PROPERTIES OUTPUT_NAME sourceatlas)
 if(WIN32)
     # Double-clicking the desktop executable must not open a console window.
     set_target_properties(startapp PROPERTIES WIN32_EXECUTABLE TRUE)
     add_executable(startapp-cli src/main.c)
     target_link_libraries(startapp-cli PRIVATE startapp_ui)
+    set_target_properties(startapp-cli PROPERTIES OUTPUT_NAME sourceatlas-cli)
     set(STARTAPP_TEST_EXECUTABLE startapp-cli)
 else()
     set(STARTAPP_TEST_EXECUTABLE startapp)
@@ -94,8 +96,8 @@ else()
     install(FILES packaging/io.github.PaperGooseRus.StartApp.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
     install(FILES packaging/io.github.PaperGooseRus.StartApp.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
     set(CPACK_GENERATOR TGZ)
-    set(CPACK_PACKAGE_NAME StartApp)
+    set(CPACK_PACKAGE_NAME SourceAtlas)
     set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
-    set(CPACK_PACKAGE_FILE_NAME "StartApp-${PROJECT_VERSION}-Linux-${CMAKE_SYSTEM_PROCESSOR}")
+    set(CPACK_PACKAGE_FILE_NAME "SourceAtlas-${PROJECT_VERSION}-Linux-${CMAKE_SYSTEM_PROCESSOR}")
     include(CPack)
 endif()

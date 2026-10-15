@@ -1,12 +1,12 @@
 #include "theme.h"
 
 static const char *colors[THEME_COLOR_COUNT] = {
-    "#181818", "#202020", "#303030", "#383838",
-    "#ece9e4", "#aaa6a0", "#e79873", "#49342b"
+    "#191817", "#222120", "#302e2c", "#3a3734",
+    "#ece7df", "#aaa39a", "#dc946d", "#443128", "#d7b66f", "#ef8b83"
 };
 static const char *names[THEME_COLOR_COUNT] = {
     "app_bg", "app_surface", "app_raised", "app_border",
-    "app_text", "app_muted", "app_accent", "app_selection"
+    "app_text", "app_muted", "app_accent", "app_selection", "app_warning", "app_error"
 };
 
 const char *theme_hex(ThemeColor color) { return colors[color]; }
@@ -22,6 +22,9 @@ void theme_install(void)
 {
     /* The fallback GTK decorations and dialogs use the dark variant as well. */
     g_object_set(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", TRUE, NULL);
+    gtk_icon_theme_add_resource_path(gtk_icon_theme_get_for_display(gdk_display_get_default()),
+        "/io/github/PaperGooseRus/StartApp/icons");
+    gtk_window_set_default_icon_name("io.github.PaperGooseRus.StartApp");
     GString *css = g_string_new(NULL);
     for (guint i = 0; i < THEME_COLOR_COUNT; i++)
         g_string_append_printf(css, "@define-color %s %s;", names[i], colors[i]);
@@ -37,13 +40,23 @@ void theme_install(void)
         "button:focus-visible { outline: 2px solid @app_accent; outline-offset: -2px; }"
         "button:disabled { color: @app_muted; opacity: .45; }"
         "button.suggested-action { color: @app_accent; }"
-        ".sidebar { background: @app_surface; padding: 16px 12px; }"
+        ".sidebar { background: @app_surface; padding: 14px 10px; }"
         ".title { font-size: 17px; font-weight: bold; }"
         ".brand { color: @app_accent; }"
         ".muted { color: @app_muted; font-size: 11px; }"
         ".section { color: @app_muted; font-size: 10px; font-weight: bold; letter-spacing: 1px; }"
         ".toolbar { padding: 8px 12px; background: @app_surface; }"
-        ".status { padding: 8px 12px; background: @app_surface; color: @app_muted; }"
+        ".app-header { padding: 10px 16px; }"
+        ".modebar { background: @app_bg; padding: 6px 12px; border-bottom: 1px solid @app_border; }"
+        ".mode { padding: 5px 18px; }"
+        ".command-launcher > button { background: @app_bg; color: @app_muted; }"
+        ".command-box { padding: 10px; }"
+        ".command-box list, .command-box row { background: transparent; }"
+        ".command-box row:hover, .command-box row:selected { background: @app_selection; border-radius: 6px; }"
+        ".build-settings { padding: 24px; }"
+        ".inspector { background: @app_surface; padding: 14px; border-left: 1px solid @app_border; }"
+        ".monospace { font-family: monospace; }"
+        ".status { padding: 3px 12px; background: @app_surface; color: @app_muted; font-size: 11px; }"
         "listview { background: transparent; color: @app_text; }"
         "listview row { border-radius: 6px; }"
         "listview row:hover { background: @app_raised; }"
@@ -63,7 +76,7 @@ void theme_install(void)
         "scrollbar slider { background: #505050; border: none; }"
         "scrollbar slider:hover { background: #77716b; }"
         "label link { color: @app_accent; }"
-        ".details { background: @app_surface; padding: 12px; color: @app_muted; font-size: 11px; }");
+        ".details { color: @app_muted; font-size: 12px; }");
     GtkCssProvider *provider = gtk_css_provider_new();
     gtk_css_provider_load_from_string(provider, css->str);
     gtk_style_context_add_provider_for_display(gdk_display_get_default(),

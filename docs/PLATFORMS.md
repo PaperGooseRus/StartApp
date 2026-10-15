@@ -8,11 +8,11 @@ Workflow **Linux and Windows** собирает Linux-архив и перено
 Скачивание artifacts GitHub может требовать входа в аккаунт.
 
 - **Windows 10/11 x64:** распакуйте ZIP целиком в любую папку и запустите
-  `StartApp-Windows-x64/startapp.exe`. GTK4, DLL, схемы настроек и данные
+  `SourceAtlas-Windows-x64/sourceatlas.exe`. GTK4, DLL, схемы настроек и данные
   включены в папку. MSYS2 нужен для сборки, для запуска готового ZIP он не нужен.
-  В командной строке используйте `startapp-cli.exe`.
+  В командной строке используйте `sourceatlas-cli.exe`.
 - **Linux x64:** архив CI собирается в Ubuntu 24.04. Распакуйте и запустите
-  `bin/startapp`. GTK4 >= 4.12 и совместимые системные библиотеки должны быть
+  `bin/sourceatlas`. GTK4 >= 4.12 и совместимые системные библиотеки должны быть
   установлены, включая JSON-GLib >= 1.6 и GtkSourceView >= 5.4. Для другого дистрибутива надёжнее собрать программу на нём.
   Локальный архив, собранный в Debian 13, рассчитан на Debian 13: он не является
   универсальным статическим Linux-пакетом.
@@ -28,17 +28,17 @@ Ubuntu 24.04 / Debian 13:
 sudo apt-get update
 sudo apt-get install build-essential pkg-config libgtk-4-dev libjson-glib-dev libgtksourceview-5-dev cmake ninja-build
 sh scripts/build-linux.sh
-./build/linux/startapp /путь/к/проекту
+./build/linux/sourceatlas /путь/к/проекту
 ```
 
 Скрипт выполняет сборку Release, тесты ядра и создаёт
-`build/linux/StartApp-0.6.0-Linux-x86_64.tar.gz` (имя архитектуры зависит от машины).
+`build/linux/SourceAtlas-0.7.0-Linux-x86_64.tar.gz` (имя архитектуры зависит от машины).
 
 Установка бинарника, ярлыка меню и иконки для своего пользователя:
 
 ```sh
 cmake --install build/linux --prefix "$HOME/.local"
-"$HOME/.local/bin/startapp"
+"$HOME/.local/bin/sourceatlas"
 ```
 
 Для системной установки используйте выбранный системный prefix и соответствующие
@@ -72,17 +72,17 @@ pacman -S --needed \
   mingw-w64-ucrt-x86_64-binutils
 ```
 
-Перейдите к исходникам. Например, для `C:\Projects\StartApp`:
+Перейдите к исходникам. Например, для `C:\Projects\SourceAtlas`:
 
 ```sh
-cd /c/Projects/StartApp
+cd /c/Projects/SourceAtlas
 bash scripts/build-windows.sh
-./build/windows/startapp.exe
+./build/windows/sourceatlas.exe
 ```
 
 Скрипт собирает GUI и консольный вариант, выполняет тесты ядра и создаёт
-`dist/StartApp-Windows-x64.zip`. Для повторной упаковки сначала переместите или
-удалите предыдущую сгенерированную папку `dist/StartApp-Windows-x64`.
+`dist/SourceAtlas-Windows-x64.zip`. Для повторной упаковки сначала переместите или
+удалите предыдущую сгенерированную папку `dist/SourceAtlas-Windows-x64`.
 Скрипт не перезаписывает её автоматически.
 
 Проверка интерфейса в обычном графическом сеансе Windows:
@@ -102,7 +102,7 @@ clangd, запуск целей и базовую отладку GDB/LLDB. См.
 Для этого нужны CMake, генератор и компилятор пользователя: они не включены
 в переносимый ZIP. Укажите `cmake.exe` во вкладке «Сборка», например
 `C:\Program Files\CMake\bin\cmake.exe`. Для сборки собственных проектов UCRT64
-запускайте StartApp из UCRT64-терминала, чтобы компилятор/Ninja были в PATH.
+запускайте SourceAtlas из UCRT64-терминала, чтобы компилятор/Ninja были в PATH.
 Журнал и переходы к ошибкам работают в обычном окне; остановка завершает
 всю цепочку посредством Windows Job Object. Рабочее состояние хранится
 в пользовательской конфигурации GLib (обычно `%LOCALAPPDATA%\startapp\workspace.ini`).
@@ -110,8 +110,8 @@ clangd, запуск целей и базовую отладку GDB/LLDB. См.
 После распаковки переносимой сборки в PowerShell:
 
 ```powershell
-& 'C:\Apps\StartApp-Windows-x64\startapp.exe' 'C:\Projects\мой проект'
-& 'C:\Apps\StartApp-Windows-x64\startapp-cli.exe' --inspect 'C:\Projects\мой проект'
+& 'C:\Apps\SourceAtlas-Windows-x64\sourceatlas.exe' 'C:\Projects\мой проект'
+& 'C:\Apps\SourceAtlas-Windows-x64\sourceatlas-cli.exe' --inspect 'C:\Projects\мой проект'
 ```
 
 Оставляйте рядом с EXE все DLL и каталоги `share`, `etc`, `lib`. Не копируйте
@@ -134,7 +134,7 @@ Artifacts загружаются только после успешных обя
 
 Обе платформы проходят импорт настоящих CMake File API/compile_commands,
 проверки Debug/Release, переход по графу целей и изменение размера окна.
-Для команд MSVC `/I` поддерживается анализ метаданных; сборка самого StartApp
+Для команд MSVC `/I` поддерживается анализ метаданных; сборка самого SourceAtlas
 по-прежнему выполняется GCC UCRT64. См. [BUILD_METADATA.md](BUILD_METADATA.md).
 
 Тесты символических ссылок на Windows могут быть пропущены, если Windows не

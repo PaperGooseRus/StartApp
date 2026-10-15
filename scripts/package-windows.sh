@@ -3,13 +3,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 [[ ${MSYSTEM:-} == UCRT64 ]] || { printf '%s\n' 'Packaging requires MSYS2 UCRT64.' >&2; exit 1; }
 prefix=${MINGW_PREFIX:?}
-package=dist/StartApp-Windows-x64
+package=dist/SourceAtlas-Windows-x64
 [[ ! -e $package ]] || { printf '%s\n' "Move or remove the previous $package before packaging." >&2; exit 1; }
-[[ -f build/windows/startapp.exe && -f build/windows/startapp-cli.exe ]] || {
+[[ -f build/windows/sourceatlas.exe && -f build/windows/sourceatlas-cli.exe ]] || {
     printf '%s\n' 'Build the Windows executables first.' >&2; exit 1;
 }
 mkdir -p "$package"
-cp build/windows/startapp.exe build/windows/startapp-cli.exe "$package/"
+cp build/windows/sourceatlas.exe build/windows/sourceatlas-cli.exe "$package/"
 if [[ -d $prefix/lib/gdk-pixbuf-2.0 ]]; then
     mkdir -p "$package/lib"
     cp -R "$prefix/lib/gdk-pixbuf-2.0" "$package/lib/"
@@ -17,7 +17,7 @@ fi
 
 # Resolve the complete PE import closure, including GTK's transitive DLLs.
 # All application DLLs come from this UCRT64 prefix, never another toolchain.
-queue=("$package/startapp.exe" "$package/startapp-cli.exe")
+queue=("$package/sourceatlas.exe" "$package/sourceatlas-cli.exe")
 for helper in gspawn-win64-helper.exe gspawn-win64-helper-console.exe; do
     [[ -f $prefix/bin/$helper ]] || { printf '%s\n' "Missing GLib process helper: $helper" >&2; exit 1; }
     cp "$prefix/bin/$helper" "$package/"
@@ -70,9 +70,9 @@ mkdir -p "$package/licenses"
 for license in "$prefix"/share/licenses/*; do
     [[ ! -d $license ]] || cp -R "$license" "$package/licenses/"
 done
-printf '%s\n' 'StartApp Windows x64 portable package' \
-    'Unzip the entire folder, then double-click startapp.exe.' \
-    'For command-line JSON analysis, use startapp-cli.exe --inspect "C:\path\to\project".' \
+printf '%s\n' 'SourceAtlas Windows x64 portable package' \
+    'Unzip the entire folder, then double-click sourceatlas.exe.' \
+    'For command-line JSON analysis, use sourceatlas-cli.exe --inspect "C:\path\to\project".' \
     'Windows 10/11 x64; no MSYS2 installation is required to run this folder.' > "$package/START-HERE.txt"
-(cd dist; cmake -E tar cf StartApp-Windows-x64.zip --format=zip -- StartApp-Windows-x64)
-printf '%s\n' 'Created dist/StartApp-Windows-x64.zip'
+(cd dist; cmake -E tar cf SourceAtlas-Windows-x64.zip --format=zip -- SourceAtlas-Windows-x64)
+printf '%s\n' 'Created dist/SourceAtlas-Windows-x64.zip'
