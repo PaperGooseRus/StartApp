@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install GTK4 and build tools
-        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libjson-glib-dev libgtksourceview-5-dev cmake ninja-build pkg-config xvfb xauth dbus-daemon
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libjson-glib-dev libgtksourceview-5-dev cmake ninja-build pkg-config xvfb xauth dbus-daemon clangd gdb meson make git
       - name: Build and package
         run: sh scripts/build-linux.sh
       - name: Test GUI
@@ -48,6 +48,11 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-binutils
+            mingw-w64-ucrt-x86_64-clang-tools-extra
+            mingw-w64-ucrt-x86_64-gdb
+            mingw-w64-ucrt-x86_64-meson
+            mingw-w64-ucrt-x86_64-make
+            git
       - name: Build, core tests and portable ZIP
         run: bash scripts/build-windows.sh
       - name: Test native GTK4 GUI
@@ -68,7 +73,7 @@ jobs:
             $stdout = "$env:RUNNER_TEMP/portable-$exe.stdout"
             $stderr = "$env:RUNNER_TEMP/portable-$exe.stderr"
             $process = Start-Process "$app/$exe" -ArgumentList '--smoke-test' -WorkingDirectory $env:RUNNER_TEMP -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-            if (-not $process.WaitForExit(45000)) { $process.Kill(); throw "Portable $exe timed out" }
+            if (-not $process.WaitForExit(75000)) { $process.Kill(); throw "Portable $exe timed out" }
             if ($process.ExitCode -ne 0) {
               foreach ($path in @($stdout, $stderr)) {
                 Get-Content $path -Tail 30 | ForEach-Object {

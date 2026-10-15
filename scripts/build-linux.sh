@@ -6,6 +6,6 @@ touch build/linux/.cmake/api/v1/query/codemodel-v2
 touch build/linux/.cmake/api/v1/query/toolchains-v1
 cmake -S . -B build/linux -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 cmake --build build/linux --parallel 2
-ctest --test-dir build/linux -R '^(core|build-run|cmake-build|metadata-self)$' --output-on-failure
+bash scripts/ci-core-tests.sh build/linux
 cmake --build build/linux --target package
 printf '%s\n' 'Built build/linux/startapp and a Linux archive in build/linux/.'

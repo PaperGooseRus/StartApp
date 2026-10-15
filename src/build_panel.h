@@ -10,6 +10,7 @@ GtkWidget *build_panel_widget(BuildPanel *panel);
 gboolean build_panel_start(BuildPanel *panel, const Project *project, BuildPlan *plan);
 gboolean build_panel_running(BuildPanel *panel);
 void build_panel_stop(BuildPanel *panel);
+void build_panel_observe(BuildPanel *panel, BuildOutput output, gpointer data);
 gint build_panel_exit_code(BuildPanel *panel);
 gboolean build_panel_stopped(BuildPanel *panel);
 guint build_panel_diagnostic_count(BuildPanel *panel);
