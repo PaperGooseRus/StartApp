@@ -27,7 +27,11 @@ static void remove_tree(const char *path)
         GDir *dir = g_dir_open(path, 0, NULL); g_assert_nonnull(dir); const char *name;
         while ((name = g_dir_read_name(dir))) { g_autofree char *child = g_build_filename(path, name, NULL); remove_tree(child); }
         g_dir_close(dir); g_assert_cmpint(g_rmdir(path), ==, 0);
-    } else g_assert_cmpint(g_unlink(path), ==, 0);
+    } else {
+        /* Git marks loose objects read-only on Windows; this is our own fixture. */
+        g_chmod(path, 0600);
+        if (g_unlink(path) != 0) g_error("Cannot remove owned fixture file: %s", path);
+    }
 }
 static char *fixture(void)
 {
