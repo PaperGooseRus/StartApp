@@ -833,6 +833,7 @@ static void scan_done(GObject *source, GAsyncResult *result, gpointer user_data)
         gtk_toggle_button_set_active(app->split, restore->split);
         set_view(app, (WorkView)restore->view);
         gtk_toggle_button_set_active(app->inspector_toggle, restore->inspector);
+        gtk_paned_set_position(app->main_pane, restore->log);
     }
     const char *target_name = restore ? restore->target : previous_target;
     if (target_name) for (guint i = 0; i < project->targets->len; i++) {
@@ -1879,6 +1880,18 @@ static gboolean smoke_tick(gpointer data)
         gtk_toggle_button_set_active(app->split, TRUE); editor_go_to_line(app->editor, 101);
         app->smoke_stage++; return G_SOURCE_CONTINUE;
     }
+    if (app->smoke_stage == 57) {
+        set_view(app, VIEW_BUILD); gtk_toggle_button_set_active(app->inspector_toggle, TRUE);
+        save_session(app); scan_project(app, app->smoke_root, TRUE);
+        app->smoke_stage++; return G_SOURCE_CONTINUE;
+    }
+    if (app->smoke_stage == 58) {
+        if (app->view != VIEW_BUILD || !gtk_toggle_button_get_active(app->split) ||
+            !gtk_toggle_button_get_active(app->inspector_toggle)) goto failed;
+        gtk_toggle_button_set_active(app->inspector_toggle, FALSE);
+        set_view(app, VIEW_CODE); gtk_toggle_button_set_active(app->log_toggle, FALSE);
+        editor_go_to_line(app->editor, 101); app->smoke_stage++; return G_SOURCE_CONTINUE;
+    }
     if (!take_screenshot(app)) goto failed;
     GtkWidget *controls[] = {app->scan_button, app->save_button, GTK_WIDGET(app->target_mode), GTK_WIDGET(app->position)};
     for (guint i = 0; i < G_N_ELEMENTS(controls); i++) {
@@ -2055,7 +2068,9 @@ static void inspector_toggled(GtkToggleButton *button, gpointer data)
     App *app = data;
     gtk_revealer_set_reveal_child(app->inspector, gtk_toggle_button_get_active(button));
     /* Keep a readable map on narrow windows when opening the inspector. */
-    if (gtk_toggle_button_get_active(button) && gtk_widget_get_width(GTK_WIDGET(app->window)) < 1280) {
+    if (gtk_toggle_button_get_active(button) && app->view != VIEW_BUILD &&
+        (app->view == VIEW_MAP || gtk_toggle_button_get_active(app->split)) &&
+        gtk_widget_get_width(GTK_WIDGET(app->window)) < 1280) {
         gtk_toggle_button_set_active(app->split, FALSE); set_view(app, VIEW_MAP);
     }
 }
